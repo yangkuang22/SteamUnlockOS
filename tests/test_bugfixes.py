@@ -837,3 +837,75 @@ class TestServerClientDisconnect(unittest.TestCase):
         h.path = "/api/update/check"
         h.do_GET()
         self.assertEqual(sent, [200], f"断开后不应再补发 500: {sent}")
+
+
+# ══════════════════════════════════════════════════════════════
+#  游戏名：P1-1 没覆盖到的两条"永不自愈"路径
+# ══════════════════════════════════════════════════════════════
+
+class TestNameFallbackHeals(TempCorePaths):
+    """实机复现（SteamOS，临时目录）:
+      A. installed.json 记录里是兜底名 "AppID 123" → 网络恢复后仍返回 'AppID 123'
+         （install() 解析失败时会把兜底名写进记录；P1-1 只修了 names.json）
+      B. 一次解析失败 → 兜底名进内存缓存 → 网络恢复后仍是 'AppID 456'，
+         直到 WebUI 进程重启（实机 WebUI 是常驻进程）
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_resolve = core._resolve_name
+        self._orig_home = core.HOME
+        core.HOME = self.tmp / "home"
+        self.calls: list[int] = []
+
+    def tearDown(self) -> None:
+        core._resolve_name = self._orig_resolve
+        core.HOME = self._orig_home
+        super().tearDown()
+
+    def _resolver(self, result):
+        def f(a):
+            self.calls.append(a)
+            return result
+        core._resolve_name = f
+
+    def test_record_fallback_name_heals(self) -> None:
+        self._resolver("真实名字")
+        self.assertEqual(core._name_for(123, "AppID 123"), "真实名字")
+
+    def test_record_real_name_used_directly(self) -> None:
+        self._resolver("不该被调用")
+        self.assertEqual(core._name_for(123, "记录里的真名"), "记录里的真名")
+        self.assertEqual(self.calls, [])
+
+    def test_failure_not_locked_in_memory(self) -> None:
+        self._resolver(None)
+        self.assertEqual(core._name_for(456, None), "AppID 456")
+        # 冷却期内不重复请求（离线时不能每次刷新列表都把 5 个源的超时再等一遍）
+        self._resolver("恢复后的名字")
+        self.calls.clear()
+        self.assertEqual(core._name_for(456, None), "AppID 456")
+        self.assertEqual(self.calls, [], "冷却期内不应重试")
+        # 冷却期过后重试 → 自愈
+        core._name_cache["456"] = time.time() - core._NAME_RETRY_SEC - 1
+        self.assertEqual(core._name_for(456, None), "恢复后的名字")
+
+    def test_install_does_not_record_fallback_name(self) -> None:
+        from suos import multisource, updater
+        appid = 7777001
+        orig_ms, orig_gids, orig_dc = multisource.resolve, updater.latest_gids, core.DEPOTCACHE
+        core.DEPOTCACHE = self.tmp / "depotcache"          # 不碰真实 depotcache
+        multisource.resolve = lambda a, verbose=False: {
+            "appid": a, "name": None, "keys": {7777002: "ab" * 32}, "manifests": [],
+            "lua": f'addappid({a})\naddappid(7777002,0,"{"ab" * 32}")\n'
+                   f'setManifestid(7777002,"123")\n',
+            "sources": {}}
+        updater.latest_gids = lambda a, timeout=25: {}
+        self._resolver(None)
+        try:
+            r = core.install(appid, include_dlc=False)
+        finally:
+            multisource.resolve, updater.latest_gids, core.DEPOTCACHE = orig_ms, orig_gids, orig_dc
+        self.assertTrue(r["ok"], r)
+        rec = json.loads(core.RECORD.read_text(encoding="utf-8"))
+        self.assertIsNone(rec[str(appid)]["name"], "不能把兜底名写进 installed.json")

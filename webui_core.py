@@ -315,39 +315,59 @@ def _resolve_name(appid: int) -> "str | None":
     return None
 
 
+# 内存缓存: appid → 真实名字(str)，或最近一次解析失败的时间戳(float)
 _name_cache: dict = {}
+# 解析失败后的冷却期：期间直接显示兜底名，不重复请求
+# （5 个源全部超时时单个游戏要 1 分钟以上，不能每次刷新列表都重来一遍）
+_NAME_RETRY_SEC = 300
+_FALLBACK_NAME_RE = re.compile(r"^AppID \d+$")
+
+
+def _is_fallback_name(name) -> bool:
+    """兜底显示名（"AppID 数字"）不是真名，不能当成已知名字"""
+    return not name or bool(_FALLBACK_NAME_RE.match(str(name)))
 
 
 def _name_for(appid: int, db_name: str | None) -> str:
-    """拿游戏名：记录里 → 内存缓存 → 磁盘名字缓存 → Steam API"""
-    if db_name:
+    """拿游戏名：记录里 → 内存缓存 → 磁盘名字缓存 → 多源解析
+
+    记录 / 缓存里的兜底名（"AppID 数字"）一律视为"没有名字"，会重新解析（自愈）。
+    """
+    if not _is_fallback_name(db_name):
         return db_name
     key = str(appid)
-    if key in _name_cache:
-        return _name_cache[key]
+    display = f"AppID {appid}"
+    hit = _name_cache.get(key)
+    if isinstance(hit, str):
+        return hit
     # 磁盘名字缓存（避免每次调 API）
     nc = HOME / ".config/SteamUnlockOS/names.json"
     try:
         cache = json.loads(nc.read_text()) if nc.is_file() else {}
     except Exception:
         cache = {}
-    if key in cache and not str(cache[key]).startswith("AppID "):
+    if key in cache and not _is_fallback_name(cache[key]):
         _name_cache[key] = cache[key]
         return cache[key]
+    # 冷却期内刚失败过 → 不重试
+    if isinstance(hit, float) and time.time() - hit < _NAME_RETRY_SEC:
+        return display
     # ★ 自愈：如果旧缓存里是兜底值（"AppID 数字"），重新解析
     nm = _resolve_name(appid)
-    if nm:
-        # ★ 只有真实结果才写永久缓存（None 不写，下次会重试）
-        cache[key] = nm
-        try:
-            nc.parent.mkdir(parents=True, exist_ok=True)
-            nc.write_text(json.dumps(cache, ensure_ascii=False, indent=2))
-        except Exception:
-            pass
-    display = nm or f"AppID {appid}"
-    # 内存缓存只存本次进程内的结果，避免一次列表里反复请求
-    _name_cache[key] = display
-    return display
+    if not nm:
+        # ★ 失败只记时间戳（冷却期后会重试）；原来把兜底名当成功结果缓存，
+        #   一次网络抖动就锁死到 WebUI 进程重启
+        _name_cache[key] = time.time()
+        return display
+    # ★ 只有真实结果才写永久缓存
+    cache[key] = nm
+    try:
+        nc.parent.mkdir(parents=True, exist_ok=True)
+        nc.write_text(json.dumps(cache, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+    _name_cache[key] = nm
+    return nm
 
 
 def inventory(refresh_names: bool = False) -> list[dict]:
@@ -386,7 +406,7 @@ def inventory(refresh_names: bool = False) -> list[dict]:
             continue
         if a not in seen:
             out.append({
-                "appid": a, "name": v.get("name"), "dlc_count": 0,
+                "appid": a, "name": v.get("name") or f"AppID {a}", "dlc_count": 0,
                 "sources": [], "installed_at": v.get("installed_at"),
                 "missing_lua": True,
             })
@@ -622,7 +642,9 @@ def install(appid: int, include_dlc: bool = False) -> dict:
         res["message"] = "处理失败：没有这个游戏的数据"
         return res
 
-    out_name = r.get("name") or _resolve_name(appid) or f"AppID {appid}"
+    # ★ 拿不到名字就记 None，不能把兜底名 "AppID xxx" 写进 installed.json
+    #   （否则 inventory 会一直用它，永不自愈 —— P1-1 的另一条路径）
+    out_name = r.get("name") or _resolve_name(appid)
 
     # ── 2. 备份（致命 —— 没备份不敢写配置）──
     try:
