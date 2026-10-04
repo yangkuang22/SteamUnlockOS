@@ -1,0 +1,36 @@
+# 缓存
+cache/
+.probe
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# 日志
+logs/
+*.log
+
+# 备份（含个人信息）
+backup/
+
+# 临时文件
+*.tmp
+*.orig
+*.bak
+
+# Windows 工具产物
+tools/*.dump
+
+# 日志历史（本地归档，不入库）
+logs/history/
+
+# 32 位编译工具链（162 MB，可用 scripts/build-slsteam-plus.sh 重建）
+buildtools/
+
+# prebuilt 是【要入库】的（新用户需要它一键安装）—— 不要忽略
+!prebuilt/
+!prebuilt/*.so

@@ -1,0 +1,127 @@
+diff --git a/Makefile b/Makefile
+index 8f59617..1df2b06 100644
+--- a/Makefile
++++ b/Makefile
+@@ -90,7 +90,7 @@ CXXFLAGS += -Iobj/proto
+ 
+ LDFLAGS := -shared -Wl,--no-undefined
+ LDFLAGS += $(shell pkg-config --libs "openssl")
+-LDFLAGS += $(shell pkg-config --libs "libcurl")
++LDFLAGS += -lcurl -lssl -lcrypto
+ # Bundled lua is linked via $(LUA_A); -ldl satisfies loadlib's dlopen (a no-op
+ # stub on modern glibc, so it adds no external package dependency).
+ LDFLAGS += -ldl
+@@ -233,8 +233,8 @@ $(DEFAULT_PROTOBUF_LITE_A): $(PROTOBUF_STAMP)
+ 		-Dprotobuf_BUILD_TESTS=OFF \
+ 		-Dprotobuf_BUILD_SHARED_LIBS=OFF \
+ 		-Dprotobuf_BUILD_PROTOC_BINARIES=OFF \
+-		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0" \
+-		-DCMAKE_C_FLAGS="-m32 -fPIC"
++		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0 -include cstdint -D_GNU_SOURCE" \
++		-DCMAKE_C_FLAGS="-m32 -fPIC -include stdint.h -D_GNU_SOURCE"
+ 	cmake --build "$(PROTOBUF_DIR)/build-lite32" --target libprotobuf-lite -j
+ 	cp "$(PROTOBUF_DIR)/build-lite32/libprotobuf-lite.a" "$(DEFAULT_PROTOBUF_LITE_A)"
+ 
+@@ -249,8 +249,8 @@ $(DEFAULT_LIBMEM_A): $(LIBMEM_STAMP)
+ 		-DLIBMEM_DEEP_TESTS=OFF \
+ 		-DLIBMEM_BUILD_STATIC=ON \
+ 		-DLIBMEM_ARCH=i386 \
+-		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0" \
+-		-DCMAKE_C_FLAGS="-m32 -fPIC"
++		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0 -include cstdint -D_GNU_SOURCE" \
++		-DCMAKE_C_FLAGS="-m32 -fPIC -include stdint.h -D_GNU_SOURCE"
+ 	cmake --build "$(LIBMEM_DIR)/build-static32" --target libmem -j
+ 	cp "$(LIBMEM_DIR)/build-static32/liblibmem.a" "$(DEFAULT_LIBMEM_A)"
+ 
+diff --git a/res/patterns.toml b/res/patterns.toml
+index e9eb164..cb3dc23 100644
+--- a/res/patterns.toml
++++ b/res/patterns.toml
+@@ -55,6 +55,7 @@ pattern = "89 45 ? 83 C4 10 83 EC 0C 89 F3"
+ 
+ [Patterns.steamclient."CSteamMatchmakingServers::RequestInternetServerList"]
+ follow = "PrologueUpwards"
++optional = true
+ prologue = "E8 57 E5 89 55"
+ pattern = "C7 04 24 ? 03 00 00 E8 ? ? ? ? 5A 89 45 ? 59 FF B6 08 01 00 00 FF B6 04 01 00 00 FF B6 00 01 00 00 FF B6 FC 00 00 00 FF B6 F8 00 00 00 6A 01 6A 00 FF 75 18 56 50 E8"
+ 
+@@ -115,6 +116,7 @@ pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 70 01 00 00 8B 45 08
+ 
+ [Patterns.steamclient."IClientRemoteStorage::RunIPCFrame"]
+ follow = "PrologueUpwards"
++optional = true
+ prologue = "E5 89 55"
+ pattern = "6A 04 50 51 E8 ? ? ? ? 8B 85 ? FE FF FF 83 C4 10 3D ? ? ? ?"
+ 
+@@ -158,6 +160,7 @@ pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC ? 54 00 00 8B 45 08
+ 
+ [Patterns.steamclient."IClientUserStats::RunIPCFrame"]
+ follow = "None"
++optional = true
+ # Entry prologue + sub esp,0x2C0 + stable local spill slots.
+ pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC C0 02 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 40 FF FF FF 8B 45 10 89 8D 4C FF FF FF 89 F3 89 85 54 FF FF FF 65 A1 14 00 00 00 89 45 E4 31 C0 8D 85 5C FF FF FF 6A 04 50 51 E8 ? ? ? ? 8B 85 5C FF FF FF 83 C4 10 3D ? 65 6D 87"
+ 
+@@ -220,4 +223,5 @@ pattern = "55 89 E5 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 8C 00 00 00 8B 7D 08
+ 
+ [Patterns.steamui."CUpdateManager::MarkAppChange"]
+ follow = "None"
++optional = true
+ pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C ? ? ? ? ? ? 89 45 D4 8B 80 E0 09 00 00 85 ? 0F 94 C1 85 ? 8B 00 0F 94 C2 09 D1 89 CF 85 C0 0F 85 ? ? 00 00 C7 45 DC 00 00 00 00 84 C9 74 0B 8D 65 F4 5B 5E 5F 5D C3 8D 76 00 8B 45 08 83 40 40 01 83 50 44 00 83 FE 07"
+diff --git a/src/feats/requestcode.cpp b/src/feats/requestcode.cpp
+index e4445c5..2cac874 100644
+--- a/src/feats/requestcode.cpp
++++ b/src/feats/requestcode.cpp
+@@ -54,6 +54,12 @@ namespace
+ 	std::mutex                   g_deniedGidMtx;
+ 	std::unordered_set<uint64_t> g_deniedGids;
+ 
++	// ★ 崩溃修复：Steam 会对同一批多个 depot 复用同一个 jobid_source
++	//   （实测 app=209370 的 depot 209383 与 209378 都拿到 jobid=4086049243978118896）。
++	//   每个 jobid 只能注入一次响应，否则 Steam 收到重复响应后崩溃（assert_*.dmp）。
++	std::unordered_set<uint64_t> g_injectedJobIds;
++	std::mutex g_injectedJobIdMtx;
++
+ 	// Lock-free fast-path gate for the recv hook (runs on every incoming packet):
+ 	// mirrors g_pending.size(); only written under g_mutex.
+ 	std::atomic<size_t>  g_pendingCount{0};
+@@ -135,6 +141,20 @@ namespace RequestCode
+ 		// error like opensteamtool 403) fabricates a denial and BLOCKS a legitimate download.
+ 		// shouldSpoofOwnership is a config-set + genuine-owned-set lookup, safe to call on this frame
+ 		// thread (it never makes a Steam client call). appId==0 (absent in the request) -> pass through.
++		// ★ 崩溃绕过（精准）：当 depotId == appId 时不接管。
++		//
++		// 实测崩溃场景：Steam 请求 "depot 625960" 的清单请求码，而 625960 其实是
++		// appid 本身（不是真 depot）。此时我们的 fork 会丢弃请求并注入伪造的
++		// ServiceMethodResponse，Steam 随即崩溃（assert_*.dmp）。
++		//
++		// 正常的 depot（如 209384 ∈ 209370）不会出现 depotId == appId，
++		// 所以只排除这一种畸形情况，其余请求码照常接管（下载新游戏必需）。
++		if (depotId == appId)
++		{
++			g_pLog->debug("RequestCode: skip malformed depot==app (%u) — pass through to CM\n", appId);
++			return false;
++		}
++
+ 		if (!appId || !Ownership::shouldSpoofOwnership(appId))
+ 			return false;
+ 
+@@ -202,6 +222,19 @@ namespace RequestCode
+ 		}
+ 		if (!have) return false;
+ 
++		// ★ 同一 jobid 只注入一次（否则 Steam 收到重复响应会崩溃）
++		{
++			std::lock_guard<std::mutex> lk(g_injectedJobIdMtx);
++			if (!g_injectedJobIds.insert(ready.jobId).second)
++			{
++				g_pLog->debug("RequestCode: jobid=%llu already injected once — skipping duplicate (jobid reuse by Steam)\n",
++				              static_cast<unsigned long long>(ready.jobId));
++				return false;
++			}
++			// 防泄漏：集合过大时清空（正常不会到 4096）
++			if (g_injectedJobIds.size() > 4096) g_injectedJobIds.clear();
++		}
++
+ 		uint64_t code = 0;
+ 		try { code = ready.future.get(); }
+ 		catch (const std::exception& e)

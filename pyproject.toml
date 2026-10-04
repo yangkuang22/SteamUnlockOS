@@ -1,0 +1,8 @@
+[project]
+name = "steamos-unlock"
+version = "0.1.0"
+description = "SteamUnlock 的 SteamOS 数据管道移植（配合 SLSsteam）"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

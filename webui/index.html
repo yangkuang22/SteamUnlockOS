@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Steam 库管理</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
+    background: #1b2838; color: #c7d5e0;
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 560px;
+    background: #16202d; border-radius: 14px; padding: 28px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  }
+  h1 { font-size: 20px; color: #fff; margin-bottom: 4px; font-weight: 600; }
+  .sub { font-size: 13px; color: #7a8b9c; margin-bottom: 22px; }
+  .row { display: flex; gap: 10px; }
+  input {
+    flex: 1; padding: 13px 15px; font-size: 16px;
+    background: #0e1621; border: 1px solid #2a3f5a; border-radius: 8px;
+    color: #fff; outline: none; transition: border-color .15s;
+  }
+  input:focus { border-color: #66c0f4; }
+  input::placeholder { color: #4a5c70; }
+  button {
+    padding: 13px 22px; font-size: 15px; font-weight: 600;
+    border: none; border-radius: 8px; cursor: pointer;
+    transition: filter .15s, opacity .15s;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:not(:disabled):hover { filter: brightness(1.12); }
+  .primary { background: linear-gradient(135deg,#66c0f4,#417fa6); color: #04121d; }
+  .go { background: linear-gradient(135deg,#a4d007,#6b8f00); color: #0d1500; width: 100%; margin-top: 14px; }
+  .danger { background: #3a2028; color: #e08a9a; border: 1px solid #5a2a38; }
+  #result { margin-top: 22px; }
+  .box { background: #0e1621; border-radius: 10px; padding: 18px; border: 1px solid #22344a; }
+  .box.ok { border-color: #2c5c2c; }
+  .box.err { border-color: #6a2a2a; }
+  .name { font-size: 17px; color: #fff; font-weight: 600; margin-bottom: 6px; }
+  .meta { font-size: 13px; color: #8ba0b5; line-height: 1.7; }
+  .tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    background: #1e3a52; color: #7fc4ee; font-size: 12px; margin-right: 5px;
+  }
+  .tag.green { background: #1e4020; color: #8fd48f; }
+  .msg { font-size: 14px; line-height: 1.75; white-space: pre-wrap; }
+  .steps { font-size: 13px; color: #8ba0b5; line-height: 1.9; margin-top: 10px; }
+  .opt {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 12px; font-size: 13px; color: #8ba0b5; cursor: pointer;
+    user-select: none;
+  }
+  .opt input { width: 15px; height: 15px; accent-color: #66c0f4; cursor: pointer; }
+  .lib-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin: 26px 0 10px; padding-bottom: 8px;
+    border-bottom: 1px solid #22344a;
+    font-size: 14px; color: #8ba0b5; font-weight: 600;
+  }
+  .lib-count { font-weight: 400; font-size: 12px; color: #5c6f83; }
+  .lib-list { display: flex; flex-direction: column; gap: 7px; }
+  .mini {
+    background: #1e3a52; color: #9fd4ff; border: 1px solid #2a4f6e;
+    border-radius: 6px; padding: 4px 11px; font-size: 12px; cursor: pointer;
+    transition: background .15s;
+  }
+  .mini:hover { background: #264b68; }
+  .mini:disabled { opacity: .5; cursor: not-allowed; }
+  .mini.go { background: #2c5c2c; color: #a8e6a8; border-color: #3d7a3d; }
+  .mini.go:hover { background: #357035; }
+  .lib-item {
+    display: flex; align-items: center; gap: 10px;
+    background: #0e1621; border: 1px solid #1d2c3d; border-radius: 8px;
+    padding: 11px 13px; transition: border-color .15s;
+  }
+  .lib-item:hover { border-color: #2f4c6b; }
+  .lib-item .g-name { flex: 1; color: #dbe7f0; font-size: 14px; }
+  .lib-item .g-id { color: #4f6379; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .lib-item .g-tag.upd { background: #4a3a10; color: #f0c674; }
+  .lib-item .g-tag.ok { background: #1e4020; color: #8fd48f; }
+  .lib-item .g-tag {
+    font-size: 11px; padding: 2px 7px; border-radius: 4px;
+    background: #1e3a52; color: #7fc4ee; white-space: nowrap;
+  }
+  .lib-item .g-del {
+    background: none; border: none; color: #4a5c70; cursor: pointer;
+    font-size: 17px; line-height: 1; padding: 3px 5px; border-radius: 4px;
+    transition: color .15s, background .15s;
+  }
+  .lib-item .g-del:hover { color: #e08a9a; background: #2a1a20; }
+  .lib-empty { color: #4a5c70; font-size: 13px; padding: 14px; text-align: center; }
+  .hint { font-size: 12px; color: #5c6f83; margin-top: 16px; line-height: 1.7; }
+  code { background: #0e1621; padding: 1px 5px; border-radius: 3px; color: #9fd4ff; }
+  .spin { display: inline-block; animation: s 1s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Steam 库管理</h1>
+  <div class="sub">输入 Steam AppID → 查询 → 添加 → 重启 Steam 后在库中管理</div>
+
+  <div class="row">
+    <input id="appid" type="text" inputmode="numeric" placeholder="例如 4012810" autofocus>
+    <button class="primary" id="btnSearch">搜索</button>
+  </div>
+
+  <label class="opt">
+    <input type="checkbox" id="dlc" checked>
+    <span>同时处理全部 DLC</span>
+  </label>
+
+  <div id="result"></div>
+
+  <div id="library" style="display:none">
+    <div class="lib-head">
+      <span>已添加游戏</span>
+      <span style="flex:1"></span>
+      <button class="mini" id="btnCheckUpd">检查更新</button>
+      <span class="lib-count" id="libCount"></span>
+    </div>
+    <div id="libList" class="lib-list"></div>
+  </div>
+
+  <div class="hint">
+    <b>AppID 怎么找：</b>Steam 商店页面地址里的数字，例如
+    <code>store.steampowered.com/app/<b>4012810</b>/</code><br>
+    <b>搜不到怎么办：</b>说明三个密钥库都还没收录这个游戏，等社区更新后再试
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let current = null;
+
+async function api(path, params) {
+  const q = new URLSearchParams(params).toString();
+  const r = await fetch(path + '?' + q);
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function render(html) { $('result').innerHTML = html; }
+
+async function doSearch() {
+  const raw = $('appid').value.trim();
+  if (!/^\d+$/.test(raw)) { render(box('err', '请输入纯数字的 AppID')); return; }
+  $('btnSearch').disabled = true;
+  render('<div class="box meta"><span class="spin">◐</span> 正在查询三个密钥库…</div>');
+  try {
+    const r = await api('/api/search', { appid: raw });
+    current = r;
+    if (!r.found) {
+      render(box('err',
+        `<div class="name">没有这个游戏的数据</div>
+         <div class="msg">AppID <b>${esc(raw)}</b> 在三个密钥库（Sudama / 社区库 / ManifestHub3）里都没有收录。</div>
+         <div class="meta" style="margin-top:8px">可能原因：游戏太新、太冷门，或者 AppID 输错了。</div>`));
+      return;
+    }
+    render(box('ok',
+      `<div class="name">${esc(r.name || ('AppID ' + raw))}</div>
+       <div class="meta">
+         <span class="tag green">找到数据</span>
+         <span class="tag">${r.depot_count} 个 depot</span>
+         <span class="tag">来源: ${esc((r.key_sources || []).join(', ') || '清单')}</span>
+         ${r.dlc_count ? `<span class="tag">${r.dlc_count} 个 DLC</span>` : ''}
+         ${r.installed ? '<span class="tag green">已添加</span>' : ''}
+       </div>
+       <button class="go" id="btnInstall">添 加</button>`));
+    $('btnInstall').onclick = () => doInstall(raw);
+  } catch (e) {
+    render(box('err', `<div class="msg">${esc(e.message)}</div>`));
+  } finally {
+    $('btnSearch').disabled = false;
+  }
+}
+
+async function doInstall(appid) {
+  $('btnInstall').disabled = true;
+  $('btnInstall').textContent = '正在写入…';
+  try {
+    const withDlc = $('dlc') && $('dlc').checked ? '1' : '0';
+    const r = await api('/api/install', { appid, dlc: withDlc });
+    const steps = (r.steps || []).map(s => esc(s)).join('<br>');
+    if (r.ok) {
+      render(box('ok',
+        `<div class="name">✅ 处理完成</div>
+         <div class="msg">${esc(r.message)}</div>
+         <div class="steps">${steps}</div>
+         <div class="meta" style="margin-top:14px">
+           <b>下一步：</b>完全退出 Steam 再重新打开（密钥只在启动时读取）<br>
+           然后到库里找这个游戏，点安装即可下载
+         </div>`));
+    } else {
+      render(box('err',
+        `<div class="name">处理失败</div>
+         <div class="msg">${esc(r.message || '未知错误')}</div>
+         <div class="steps">${steps}</div>`));
+    }
+  } catch (e) {
+    render(box('err', `<div class="msg">${esc(e.message)}</div>`));
+  }
+}
+
+function box(kind, inner) {
+  return `<div class="box ${kind}">${inner}</div>`;
+}
+
+// ── 版本状态缓存 ──
+let updateMap = {};   // appid -> {has_update, need, ...}
+
+async function checkUpdates(silent) {
+  const btn = $('btnCheckUpd');
+  if (!silent) { btn.disabled = true; btn.textContent = '检查中…'; }
+  try {
+    const r = await api('/api/update/check', {});
+    updateMap = {};
+    (r.updates || []).forEach(u => { updateMap[u.appid] = u; });
+    const n = Object.values(updateMap).filter(u => u.has_update).length;
+    if (!silent) {
+      btn.textContent = n ? `${n} 个有更新` : '已是最新';
+      btn.className = n ? 'mini go' : 'mini';
+      if (n) {
+        btn.onclick = async () => {
+          if (!confirm(`更新 ${n} 个游戏？\n（会下载新清单，重启 Steam 后开始下载）`)) return;
+          for (const [id, u] of Object.entries(updateMap)) {
+            if (!u.has_update) continue;
+            btn.textContent = `更新 ${id}…`;
+            try { await api('/api/update/apply', { appid: id }); } catch (e) {}
+          }
+          alert('更新完成，请重启 Steam');
+          checkUpdates(false);
+        };
+      }
+    }
+    loadLibrary();
+  } catch (e) {
+    if (!silent) { btn.textContent = '检查失败'; btn.className = 'mini'; }
+  } finally {
+    if (!silent) btn.disabled = false;
+  }
+}
+
+// ── 已添加列表 ──
+async function loadLibrary() {
+  const box = $('library'), list = $('libList');
+  try {
+    const r = await api('/api/list', {});
+    const games = r.games || [];
+    $('libCount').textContent = games.length ? `${games.length} 个` : '';
+    if (!games.length) {
+      box.style.display = 'block';
+      list.innerHTML = '<div class="lib-empty">还没有通过本工具添加的游戏</div>';
+      return;
+    }
+    box.style.display = 'block';
+    list.innerHTML = games.map(g => `
+      <div class="lib-item">
+        <span class="g-name">${esc(g.name || ('AppID ' + g.appid))}</span>
+        ${g.dlc_count ? `<span class="g-tag">${g.dlc_count} 个 DLC</span>` : ''}
+        ${(() => {
+          const u = updateMap[g.appid];
+          if (!u) return '';
+          if (u.has_update) return '<span class="g-tag upd">有更新</span>';
+          if (u.error) return '';
+          return '<span class="g-tag ok">最新</span>';
+        })()}
+        <span class="g-id">${g.appid}</span>
+        <button class="g-del" title="卸载" data-id="${g.appid}">×</button>
+      </div>`).join('');
+    list.querySelectorAll('.g-del').forEach(b => {
+      b.onclick = () => doUninstall(b.dataset.id, b);
+    });
+  } catch (e) {
+    box.style.display = 'block';
+    list.innerHTML = `<div class="lib-empty">读取列表失败: ${esc(e.message)}</div>`;
+  }
+}
+
+async function doUninstall(appid, btn) {
+  const delFiles = confirm(
+    `卸载 AppID ${appid}\n\n` +
+    `确定 = 只从库移除（保留已下载的游戏文件）\n` +
+    `取消 = 我再问你一次\n`
+  );
+  if (!delFiles) return;
+  const alsoFiles = confirm(
+    `还要删除【已下载的游戏文件】吗？\n\n` +
+    `确定 = 连游戏文件一起删（释放磁盘空间，需要 Steam 已关闭）\n` +
+    `取消 = 只从库移除，文件保留`
+  );
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await api('/api/uninstall', { appid, local: alsoFiles ? '1' : '0' });
+    render(box('ok',
+      `<div class="name">已卸载</div>
+       <div class="msg">${esc(r.message || '')}</div>
+       <div class="steps">${(r.steps || []).map(esc).join('<br>')}</div>`));
+    loadLibrary();
+  } catch (e) {
+    render(box('err', `<div class="msg">卸载失败: ${esc(e.message)}</div>`));
+  }
+}
+
+$('btnSearch').onclick = doSearch;
+$('btnCheckUpd').onclick = () => checkUpdates(false);
+loadLibrary().then(() => checkUpdates(true));
+$('appid').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+</script>
+</body>
+</html>
