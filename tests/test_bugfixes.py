@@ -728,3 +728,112 @@ class TestLauncherCrashGuard(unittest.TestCase):
             t = (ROOT / f).read_text(encoding="utf-8")
             self.assertIn("s|__SUOS_DIR__|", t, f"{f} 部署启动器时没有写入项目目录")
             self.assertNotRegex(t, r'\bcp\b[^\n]*launcher\.sh', f"{f} 仍在原样 cp launcher.sh")
+
+
+# ══════════════════════════════════════════════════════════════
+#  更新检查：同一 URL 请求两次 + 串行 → WebUI 等太久，浏览器放弃
+# ══════════════════════════════════════════════════════════════
+
+import time  # noqa: E402
+import urllib.request  # noqa: E402
+
+
+class TestUpdaterSingleFetch(unittest.TestCase):
+    """实机复现（SteamOS，4 个游戏）: check_all 发了 8 个请求、耗时 16.7 秒，
+    每个 api.steamcmd.net/v1/info/<appid> 都请求了两次（manifests、buildid 各一次），
+    且逐个串行。网络差时（25 秒超时 × 2 × N）WebUI 要等几分钟，
+    webui.log 里出现浏览器放弃后的 BrokenPipe。
+    """
+
+    DELAY = 0.4
+
+    def setUp(self) -> None:
+        from suos import updater
+        self.up = updater
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self._orig = (updater.LUA_SLS, updater.STEAM, urllib.request.urlopen)
+        updater.LUA_SLS = tmp / "lua"
+        updater.STEAM = tmp / "steam"
+        updater.LUA_SLS.mkdir()
+        self.apps = [111, 222, 333]
+        for a in self.apps:
+            (updater.LUA_SLS / f"{a}.lua").write_text(
+                f'addappid({a})\nsetManifestid({a + 1},"100")\n', encoding="utf-8")
+        self.calls: list[str] = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req.full_url
+            self.calls.append(url)
+            time.sleep(self.DELAY)
+            appid = url.rsplit("/", 1)[1]
+            body = {"data": {appid: {"depots": {
+                str(int(appid) + 1): {"manifests": {"public": {"gid": "200", "size": "5"}}},
+                "branches": {"public": {"buildid": "999"}}}}}}
+
+            class R:
+                def read(self_inner):
+                    return json.dumps(body).encode()
+            return R()
+        urllib.request.urlopen = fake_urlopen
+
+    def tearDown(self) -> None:
+        self.up.LUA_SLS, self.up.STEAM, urllib.request.urlopen = self._orig
+        self._tmp.cleanup()
+
+    def test_check_fetches_once(self) -> None:
+        r = self.up.check(111)
+        self.assertEqual(len(self.calls), 1, f"同一游戏应只请求一次: {self.calls}")
+        self.assertTrue(r["has_update"])
+        self.assertEqual(r["latest_build"], "999")
+        self.assertEqual(r["need"][112]["new"], 200)
+
+    def test_check_all_parallel_and_ordered(self) -> None:
+        t0 = time.time()
+        res = self.up.check_all()
+        dt = time.time() - t0
+        self.assertEqual([r["appid"] for r in res], self.apps, "结果顺序要与 Lua 文件顺序一致")
+        self.assertEqual(len(self.calls), len(self.apps), "每个游戏只请求一次")
+        self.assertLess(dt, self.DELAY * len(self.apps) * 0.8,
+                        f"应并发执行（串行约 {self.DELAY * len(self.apps):.1f}s，实际 {dt:.2f}s）")
+
+
+# ══════════════════════════════════════════════════════════════
+#  WebUI 服务端：浏览器断开被误报成"检查更新失败"
+# ══════════════════════════════════════════════════════════════
+
+class TestServerClientDisconnect(unittest.TestCase):
+    """实机 webui.log: update_check_all() 其实成功了，是写响应时浏览器已断开
+    （BrokenPipe）。端点的 except 把它误报成"检查更新失败"，再往已关闭的
+    连接写 500，又一次 BrokenPipe —— 每次都刷两段 traceback。
+    """
+
+    def _handler(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_suos_webui_server", ROOT / "webui/server.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        h = mod.Handler.__new__(mod.Handler)
+        h.send_response = lambda *a, **k: None
+        h.send_header = lambda *a, **k: None
+
+        def boom():
+            raise BrokenPipeError(32, "Broken pipe")
+        h.end_headers = boom
+        return mod, h
+
+    def test_send_swallows_disconnect(self) -> None:
+        _, h = self._handler()
+        h._json({"x": 1})          # 不能抛异常
+
+    def test_update_check_not_misreported(self) -> None:
+        mod, h = self._handler()
+        mod.update_check_all = lambda: []
+        sent: list[int] = []
+        orig_send = mod.Handler._send
+        h._send = lambda code, body, ctype="application/json": (
+            sent.append(code), orig_send(h, code, body, ctype))
+        h.path = "/api/update/check"
+        h.do_GET()
+        self.assertEqual(sent, [200], f"断开后不应再补发 500: {sent}")

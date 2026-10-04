@@ -26,17 +26,27 @@ BACKUP = Path(__file__).resolve().parent.parent / "backup/updates"   # 项目目
 UA = {"User-Agent": "Mozilla/5.0"}
 
 
-def latest_manifests(appid: int, timeout: int = 25) -> dict[int, dict]:
-    """从 api.steamcmd.net 拿所有 depot 的最新 gid。
-
-    返回 {depot: {"gid": int, "size": int}}
-    """
+def _steamcmd_info(appid: int, timeout: int = 25) -> dict | None:
+    """api.steamcmd.net 的 appinfo。一次请求，供 latest_manifests / latest_buildid 共用。"""
     try:
         url = f"https://api.steamcmd.net/v1/info/{appid}"
         d = json.loads(urllib.request.urlopen(
             urllib.request.Request(url, headers=UA), timeout=timeout).read())
         info = d["data"][str(appid)]
+        return info if isinstance(info, dict) else None
     except Exception:
+        return None
+
+
+def latest_manifests(appid: int, timeout: int = 25, info: dict | None = None) -> dict[int, dict]:
+    """从 api.steamcmd.net 拿所有 depot 的最新 gid。
+
+    返回 {depot: {"gid": int, "size": int}}
+    info: 已经拿到的 appinfo（传了就不再请求）
+    """
+    if info is None:
+        info = _steamcmd_info(appid, timeout)
+    if not info:
         return {}
     out: dict[int, dict] = {}
     for k, v in (info.get("depots") or {}).items():
@@ -55,12 +65,13 @@ def latest_manifests(appid: int, timeout: int = 25) -> dict[int, dict]:
     return out
 
 
-def latest_buildid(appid: int, timeout: int = 25) -> str | None:
+def latest_buildid(appid: int, timeout: int = 25, info: dict | None = None) -> str | None:
+    if info is None:
+        info = _steamcmd_info(appid, timeout)
+    if not info:
+        return None
     try:
-        url = f"https://api.steamcmd.net/v1/info/{appid}"
-        d = json.loads(urllib.request.urlopen(
-            urllib.request.Request(url, headers=UA), timeout=timeout).read())
-        br = ((d["data"][str(appid)].get("depots") or {}).get("branches") or {})
+        br = ((info.get("depots") or {}).get("branches") or {})
         pub = br.get("public") or {}
         v = pub.get("buildid")
         return str(v) if v else None
@@ -93,12 +104,14 @@ def check(appid: int, verbose: bool = False) -> dict:
     if not pins:
         out["error"] = "没有 Lua 配置（不是通过本工具入库的，或没有 setManifestid）"
         return out
-    latest = latest_manifests(appid)
+    # ★ 只请求一次：manifests 和 buildid 来自同一个 appinfo（原来同一 URL 请求两次）
+    info = _steamcmd_info(appid)
+    latest = latest_manifests(appid, info=info) if info else {}
     if not latest:
         out["error"] = "api.steamcmd.net 查询失败"
         return out
     out["local_build"] = local_buildid(appid)
-    out["latest_build"] = latest_buildid(appid)
+    out["latest_build"] = latest_buildid(appid, info=info)
     for dep, old in pins.items():
         new = latest.get(dep)
         if new and new["gid"] != old:
@@ -162,13 +175,17 @@ def apply(appid: int, verbose: bool = False) -> dict:
 
 
 def check_all(verbose: bool = False) -> list[dict]:
-    """检查所有已入库游戏"""
-    out = []
-    for f in sorted(LUA_SLS.glob("*.lua")):
-        if not f.stem.isdigit():
-            continue
-        out.append(check(int(f.stem), verbose=verbose))
-    return out
+    """检查所有已入库游戏。并发查询，结果顺序与 Lua 文件顺序一致。
+
+    ★ 原来逐个串行、每个 25 秒超时 —— 网络差时 WebUI 要等几分钟，
+      浏览器早已放弃（webui.log 里的 BrokenPipe 就是这么来的）。
+    """
+    appids = [int(f.stem) for f in sorted(LUA_SLS.glob("*.lua")) if f.stem.isdigit()]
+    if verbose or len(appids) <= 1:          # verbose 要按顺序打印，不并发
+        return [check(a, verbose=verbose) for a in appids]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(appids))) as ex:
+        return list(ex.map(check, appids))
 
 def latest_gids(appid: int, timeout: int = 25) -> dict[int, int]:
     """从 Steam 拿所有 depot 的最新 gid（只有 size > 0 的）。
