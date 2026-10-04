@@ -47,10 +47,12 @@ fi
 mkdir -p "$SLSDIR/path"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/launcher.sh" ]; then
-    cp "$SCRIPT_DIR/launcher.sh" "$SLSDIR/path/steam"
+    # 部署时把实际项目目录写进启动器（日志写到 <项目目录>/logs/）
+    _root="$(cd "$SCRIPT_DIR/.." && pwd)"
+    sed "s|__SUOS_DIR__|$_root|g" "$SCRIPT_DIR/launcher.sh" > "$SLSDIR/path/steam"
     chmod +x "$SLSDIR/path/steam"
     mkdir -p "$HOME/.local/bin"
-    cp "$SCRIPT_DIR/launcher.sh" "$HOME/.local/bin/steam"
+    sed "s|__SUOS_DIR__|$_root|g" "$SCRIPT_DIR/launcher.sh" > "$HOME/.local/bin/steam"
     chmod +x "$HOME/.local/bin/steam"
     echo "  ✓ 启动器已安装"
 fi

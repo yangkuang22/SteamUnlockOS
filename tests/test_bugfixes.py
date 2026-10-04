@@ -646,3 +646,85 @@ class TestBuildenvSelfLocate(unittest.TestCase):
                  "_", proj.as_posix()],
                 capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
             self.assertIn("OK", r.stdout, r.stdout + r.stderr)
+
+
+@unittest.skipUnless(_BASH, "没有可用的 bash")
+class TestLauncherCrashGuard(unittest.TestCase):
+    """启动器崩溃保护不能误伤正常情况。
+
+    实机复现（SteamOS，Steam 正在运行时用启动器打开 steam://open/games）:
+      launcher.log: "Steam 在 30 秒内退出（第 1 次），退出码 0"，计数器 = 1
+      → 点 3 次桌面快捷方式后，下次启动 Steam 被降级成不注入，游戏显示"购买"。
+    另: 仓库版 launcher.sh 曾丢失崩溃保护和 P1-2 日志修复（部署版才有），
+        重跑 install.sh 会把部署版降级。
+    """
+
+    def _run(self, rc: int, running_pattern: str | None = None):
+        tmp = Path(self._tmp.name)
+        home, proj = tmp / "home", tmp / "proj"
+        sls = home / ".local/share/SLSsteam"
+        sls.mkdir(parents=True, exist_ok=True)
+        proj.mkdir(exist_ok=True)
+        for so in ("library-inject.so", "SLSsteam.so"):
+            (sls / so).write_bytes(b"x")
+        fake = tmp / "fake-steam"
+        fake.write_text(f"#!/bin/bash\nexit {rc}\n", encoding="utf-8")
+        fake.chmod(0o755)
+        text = (ROOT / "scripts/launcher.sh").read_text(encoding="utf-8")
+        text = text.replace('STEAMBIN="/usr/bin/steam"', f'STEAMBIN="{fake.as_posix()}"')
+        text = text.replace("sleep 30", "sleep 1")
+        # 不让本机真实运行的 Steam 干扰测试：只把测试指定的路径当成"运行中的 Steam"
+        text = text.replace("*/ubuntu12_32/steam)", (running_pattern or "/nonexistent/x") + ")")
+        launcher = tmp / "launcher.sh"
+        launcher.write_text(text, encoding="utf-8", newline="\n")
+        env = dict(os.environ, HOME=home.as_posix(), SUOS_DIR=proj.as_posix())
+        env.pop("LD_AUDIT", None)
+        subprocess.run([_BASH, launcher.as_posix()], env=env, timeout=30,
+                       capture_output=True)
+        fail = home / ".SLSsteam-crash-count"
+        log = proj / "logs/launcher.log"
+        return (fail.read_text().strip() if fail.is_file() else None,
+                log.read_text(encoding="utf-8") if log.is_file() else "")
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_normal_exit_not_counted(self) -> None:
+        cnt, log = self._run(rc=0)
+        self.assertIsNone(cnt, "退出码 0 不应计为崩溃")
+        self.assertIn("正常退出", log)
+
+    def test_real_failure_counted(self) -> None:
+        cnt, _ = self._run(rc=1)
+        self.assertEqual(cnt, "1", "30 秒内异常退出应计 1 次")
+
+    def test_log_goes_to_project_logs(self) -> None:
+        _, log = self._run(rc=0)
+        self.assertIn("带 SLSsteam-Plus 注入启动", log)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "需要 Linux 的 /proc/<pid>/exe")
+    def test_forward_when_running_not_counted(self) -> None:
+        tmp = Path(self._tmp.name)
+        fake_running = tmp / "ubuntu12_32/steam"
+        fake_running.parent.mkdir(parents=True)
+        shutil.copy2(shutil.which("sleep"), fake_running)
+        p = subprocess.Popen([str(fake_running), "30"])
+        try:
+            cnt, log = self._run(rc=0, running_pattern=fake_running.as_posix())
+        finally:
+            p.kill()
+            p.wait()
+        self.assertIsNone(cnt, "Steam 已运行时转发参数不应计为崩溃")
+        self.assertNotIn("注入启动", log, "Steam 已运行时不应进入注入/监控流程")
+
+    def test_deploy_scripts_substitute_project_dir(self) -> None:
+        launcher = (ROOT / "scripts/launcher.sh").read_text(encoding="utf-8")
+        for must in ("__SUOS_DIR__", "FAILFILE", "steam_running", 'LOG="/dev/null"'):
+            self.assertIn(must, launcher)
+        for f in ("install.sh", "scripts/install-slsteam-plus.sh"):
+            t = (ROOT / f).read_text(encoding="utf-8")
+            self.assertIn("s|__SUOS_DIR__|", t, f"{f} 部署启动器时没有写入项目目录")
+            self.assertNotRegex(t, r'\bcp\b[^\n]*launcher\.sh', f"{f} 仍在原样 cp launcher.sh")

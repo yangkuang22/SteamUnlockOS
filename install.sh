@@ -99,8 +99,9 @@ echo
 echo "[4/9] 安装启动器..."
 mkdir -p "$SLSDIR/path" "$HOME/.local/bin"
 if [ -f scripts/launcher.sh ]; then
-    cp scripts/launcher.sh "$SLSDIR/path/steam" && chmod +x "$SLSDIR/path/steam"
-    cp scripts/launcher.sh "$HOME/.local/bin/steam" && chmod +x "$HOME/.local/bin/steam"
+    # 部署时把实际安装目录写进启动器（日志写到 $INSTALL_DIR/logs/）
+    sed "s|__SUOS_DIR__|$INSTALL_DIR|g" scripts/launcher.sh > "$SLSDIR/path/steam" && chmod +x "$SLSDIR/path/steam"
+    sed "s|__SUOS_DIR__|$INSTALL_DIR|g" scripts/launcher.sh > "$HOME/.local/bin/steam" && chmod +x "$HOME/.local/bin/steam"
     ok "加固启动器（含 4 道回退 + 崩溃计数保护）"
 else
     warn "找不到 scripts/launcher.sh"
