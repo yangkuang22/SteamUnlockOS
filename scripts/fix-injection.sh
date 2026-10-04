@@ -14,15 +14,47 @@ STEAM_SH="$HOME/.local/share/Steam/steam.sh"
 BAK="$ROOT/backup/steam.sh.orig"
 SLSDIR="$HOME/.local/share/SLSsteam"
 MARK="SLSsteam-Plus"
+WRAP="$SLSDIR/path/steam"
+
+# 检查一个 .desktop 入口是否走注入包装器（符号链接会跟到系统文件 → Exec=/usr/bin/steam → ✗）
+_entry() {
+    local name="$1" f="$2"
+    if [ ! -e "$f" ]; then
+        echo "  $name: ✗ 不存在（$f）"
+    elif grep -q "^Exec=.*SLSsteam/path/steam" "$f" 2>/dev/null; then
+        echo "  $name: ✓ 走注入包装器"
+    else
+        echo "  $name: ✗ 未指向包装器（$f）"
+    fi
+}
 
 case "${1:-status}" in
   status)
-    echo "=== steam.sh 状态 ==="
-    if [ ! -f "$STEAM_SH" ]; then echo "  ✗ 找不到 $STEAM_SH"; exit 1; fi
-    if grep -q "$MARK" "$STEAM_SH"; then
-        echo "  ✓ 已打注入补丁"
+    # ★ 注入的主路径是三个入口（docs/项目全貌与维护指南.md §3.5），不是 steam.sh。
+    #   原来只看 steam.sh：注入明明生效也报"✗ 未打补丁（游戏模式/系统启动时不会注入）"
+    echo "=== 注入入口（主路径）==="
+    _entry "桌面图标" "$HOME/Desktop/steam.desktop"
+    _entry "开机自启" "$HOME/.config/autostart/steam.desktop"
+    if grep -qs '\.local/bin' "$HOME/.config/environment.d/50-steamunlock.conf"; then
+        echo "  steam 命令: ✓ PATH 优先 ~/.local/bin（游戏快捷方式走包装器）"
     else
-        echo "  ✗ 未打补丁（游戏模式/系统启动时不会注入）"
+        echo "  steam 命令: ✗ 缺 ~/.config/environment.d/50-steamunlock.conf"
+    fi
+    for w in "$WRAP" "$HOME/.local/bin/steam"; do
+        if grep -qs "LD_AUDIT" "$w"; then
+            echo "  包装器: ✓ $w"
+        else
+            echo "  包装器: ✗ 缺失或不是注入启动器（$w）"
+        fi
+    done
+    echo
+    echo "=== steam.sh 补丁（可选；Steam 每次启动会还原它，不依赖）==="
+    if [ ! -f "$STEAM_SH" ]; then
+        echo "  ○ 找不到 $STEAM_SH"
+    elif grep -q "$MARK" "$STEAM_SH"; then
+        echo "  ✓ 已打补丁"
+    else
+        echo "  ○ 未打补丁（正常：注入走上面的入口）"
     fi
     echo "  备份: $([ -f "$BAK" ] && echo "✓ $BAK" || echo '✗ 不存在')"
     echo
@@ -42,7 +74,7 @@ case "${1:-status}" in
             ;;
         esac
     done
-    [ "$found" = 0 ] && echo "  （Steam 未运行）"
+    if [ "$found" = 0 ]; then echo "  （Steam 未运行）"; fi   # 不能用 [ ] && …：Steam 在运行时会让 status 以 1 退出
     ;;
 
   install)

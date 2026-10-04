@@ -909,3 +909,59 @@ class TestNameFallbackHeals(TempCorePaths):
         self.assertTrue(r["ok"], r)
         rec = json.loads(core.RECORD.read_text(encoding="utf-8"))
         self.assertIsNone(rec[str(appid)]["name"], "不能把兜底名写进 installed.json")
+
+
+# ══════════════════════════════════════════════════════════════
+#  fix-injection.sh status：只看 steam.sh，注入生效也报"不会注入"
+# ══════════════════════════════════════════════════════════════
+
+@unittest.skipUnless(_BASH, "没有可用的 bash")
+class TestFixInjectionStatus(unittest.TestCase):
+    """实机（SteamOS）: Steam 进程带 LD_AUDIT、三个入口都指向包装器，
+    status 却报 "✗ 未打补丁（游戏模式/系统启动时不会注入）"——它只检查了
+    steam.sh，而注入的主路径是三个入口（docs §3.5），steam.sh 会被 Steam 还原。
+    """
+
+    def _home(self, desktop_exec: str) -> Path:
+        home = Path(self._tmp.name)
+        for rel, body in (
+            ("Desktop/steam.desktop", f"[Desktop Entry]\nExec={desktop_exec} %U\n"),
+            (".config/autostart/steam.desktop",
+             f"[Desktop Entry]\nExec={home.as_posix()}/.local/share/SLSsteam/path/steam -silent %U\n"),
+            (".config/environment.d/50-steamunlock.conf", "PATH=${HOME}/.local/bin:${PATH}\n"),
+            (".local/share/SLSsteam/path/steam", 'export LD_AUDIT="$LIB1:$LIB2"\n'),
+            (".local/bin/steam", 'export LD_AUDIT="$LIB1:$LIB2"\n'),
+            (".local/share/Steam/steam.sh", "#!/bin/bash\necho steam\n"),
+        ):
+            f = home / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8", newline="\n")
+        return home
+
+    def _status(self, home: Path) -> str:
+        env = dict(os.environ, HOME=home.as_posix())
+        r = subprocess.run([_BASH, (ROOT / "scripts/fix-injection.sh").as_posix(), "status"],
+                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+        self.rc = r.returncode
+        return r.stdout + r.stderr
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_entries_ok_not_reported_as_broken(self) -> None:
+        home = self._home(f"{Path(self._tmp.name).as_posix()}/.local/share/SLSsteam/path/steam")
+        out = self._status(home)
+        # 原来 Steam 正在运行时 status 以 1 退出（[ "$found" = 0 ] && … 为假）
+        self.assertEqual(self.rc, 0, out)
+        self.assertEqual(out.count("✓ 走注入包装器"), 2, out)
+        self.assertIn("PATH 优先", out)
+        self.assertNotIn("不会注入", out, "注入入口都正常时不应报不会注入")
+        self.assertIn("未打补丁（正常", out)
+
+    def test_desktop_pointing_to_system_steam_flagged(self) -> None:
+        home = self._home("/usr/bin/steam")
+        out = self._status(home)
+        self.assertIn("桌面图标: ✗ 未指向包装器", out)
