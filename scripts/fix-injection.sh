@@ -9,8 +9,9 @@
 #   bash scripts/fix-injection.sh test      # 测试注入是否生效
 # ============================================================
 set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 STEAM_SH="$HOME/.local/share/Steam/steam.sh"
-BAK="$HOME/steam-toolkit/backup/steam.sh.orig"
+BAK="$ROOT/backup/steam.sh.orig"
 SLSDIR="$HOME/.local/share/SLSsteam"
 MARK="SLSsteam-Plus"
 

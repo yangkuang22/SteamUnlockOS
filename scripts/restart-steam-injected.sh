@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 带 SLSsteam 注入重启 Steam。出错不会影响桌面/系统（只是 Steam 起不来，重跑一次即可）。
 set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 SLSDIR="$HOME/.local/share/SLSsteam"
 LIB="$SLSDIR/SLSsteam.so"
-LOG="$HOME/steam-toolkit/logs/steam-injected.log"
+LOG="$ROOT/logs/steam-injected.log"
 mkdir -p "$(dirname "$LOG")"
 
 [ -f "$LIB" ] || { echo "✗ 找不到 $LIB，先运行 scripts/setup-slssteam.sh"; exit 1; }

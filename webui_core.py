@@ -24,7 +24,7 @@ LUA_STEAM = STEAM / "config/lua"
 SLS_DIR = HOME / ".config/SLSsteam"
 LUA_SLS = SLS_DIR / "lua"
 SLS_TOML = SLS_DIR / "config.toml"
-BACKUP = HOME / "SteamUnlockOS/backup/webui"
+BACKUP = Path(__file__).resolve().parent / "backup/webui"   # 项目目录下（不写死目录名）
 
 
 def _log(msg: str) -> None:
@@ -787,7 +787,7 @@ def install(appid: int, include_dlc: bool = False) -> dict:
     # ── 7. 校验（致命）──
     try:
         import sys as _sys
-        _sys.path.insert(0, str(HOME / "Steam Toolkit"))
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
         from suos import vdf
         vdf.load(str(CONFIG_VDF))
         res["steps"].append("✓ config.vdf 校验通过")

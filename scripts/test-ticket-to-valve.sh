@@ -7,8 +7,9 @@
 # 使用: bash scripts/test-ticket-to-valve.sh on|off|status
 # ============================================================
 set -e
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 CFG="$HOME/.config/SLSsteam/config.toml"
-BAK="$HOME/steam-toolkit/backup/known-good/config.toml"
+BAK="$ROOT/backup/known-good/config.toml"
 LOG="$HOME/.Steam Toolkit-launcher.log"
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
@@ -17,7 +18,7 @@ case "${1:-status}" in
   on)
     # 让票据发给 Valve
     if grep -q "^BlockTicketRequests = true" "$CFG" 2>/dev/null; then
-        cp "$CFG" "$HOME/steam-toolkit/backup/config.toml.before-ticket-test"
+        cp "$CFG" "$ROOT/backup/config.toml.before-ticket-test"
         sed -i 's/^BlockTicketRequests = true/BlockTicketRequests = false/' "$CFG"
         log "✓ 已改为【票据发给 Valve】(BlockTicketRequests = false)"
     else
@@ -26,8 +27,8 @@ case "${1:-status}" in
     ;;
   off)
     # 恢复拦截（安全模式）
-    if [ -f "$HOME/steam-toolkit/backup/config.toml.before-ticket-test" ]; then
-        cp "$HOME/steam-toolkit/backup/config.toml.before-ticket-test" "$CFG"
+    if [ -f "$ROOT/backup/config.toml.before-ticket-test" ]; then
+        cp "$ROOT/backup/config.toml.before-ticket-test" "$CFG"
         log "✓ 已恢复【拦截票据】(BlockTicketRequests = true)"
     else
         sed -i 's/^BlockTicketRequests = false/BlockTicketRequests = true/' "$CFG" 2>/dev/null || \

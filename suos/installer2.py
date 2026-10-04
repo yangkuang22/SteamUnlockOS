@@ -74,7 +74,7 @@ def install(appid: int, dry_run: bool = False, verbose: bool = True) -> dict:
         return {"ok": True, "dry_run": True, **data}
 
     # 1. 备份 config.vdf
-    bak = Path.home() / "SteamUnlockOS/backup/config.vdf.autobak"
+    bak = Path(__file__).resolve().parent.parent / "backup/config.vdf.autobak"
     if not bak.is_file() and paths.config_vdf.is_file():
         bak.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(paths.config_vdf, bak)

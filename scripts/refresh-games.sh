@@ -20,7 +20,7 @@ APPLY = sys.argv[1] == "1"
 
 LUA_DIR = Path.home() / ".config/SLSsteam/lua"
 LUA_STEAM = Path.home() / ".local/share/Steam/config/lua"
-BACKUP = Path.home() / "SteamUnlockOS/backup/lua-refresh"
+BACKUP = Path.cwd() / "backup/lua-refresh"   # 脚本已 cd 到项目根目录
 
 print("=" * 60)
 print(" 已入库游戏的版本检查")

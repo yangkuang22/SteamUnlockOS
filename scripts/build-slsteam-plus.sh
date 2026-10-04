@@ -9,8 +9,9 @@
 #   4. 编译并安装
 # ============================================================
 set -e
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 BUILD_DIR="${BUILD_DIR:-$HOME/slsplus-build}"
-TOOLS_DIR="$HOME/steam-toolkit/buildtools"
+TOOLS_DIR="$ROOT/buildtools"
 ARCH_MIRROR="${ARCH_MIRROR:-https://geo.mirror.pkgbuild.com}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -83,11 +84,9 @@ else
     echo "  ✓ 工具链已存在"
 fi
 
-printf '#!/bin/sh\nexport PATH=%s/wrappers:$PATH\nexport LD_LIBRARY_PATH=%s/usr/lib:$LD_LIBRARY_PATH\nexport C_INCLUDE_PATH=%s/usr/include\nexport CPLUS_INCLUDE_PATH=%s/usr/include\nexport PKG_CONFIG_PATH=%s/usr/lib/pkgconfig\n' \
-    "$TOOLS_DIR" "$TOOLS_DIR" "$TOOLS_DIR" "$TOOLS_DIR" "$TOOLS_DIR" > "$HOME/steam-toolkit/buildenv.sh"
-chmod +x "$HOME/steam-toolkit/buildenv.sh"
-
-. "$HOME/steam-toolkit/buildenv.sh"
+# buildenv.sh 是仓库里的自定位脚本（TOOLS_DIR 即 $ROOT/buildtools），不再生成覆盖它
+export SLSU_ROOT="$ROOT"
+. "$ROOT/buildenv.sh"
 if ! (echo 'int main(){return 0;}' > /tmp/_t32.c && gcc -m32 /tmp/_t32.c -o /tmp/_t32 2>/dev/null); then
     echo "  ✗ 32 位编译测试失败"
     exit 1
@@ -118,7 +117,7 @@ fi
 
 echo
 echo "[4/5] 编译（首次约 20-40 分钟，含 LLVM）..."
-. "$HOME/steam-toolkit/buildenv.sh"
+. "$ROOT/buildenv.sh"
 make -j"$(nproc)" bin/SLSsteam.so bin/library-inject.so
 
 echo

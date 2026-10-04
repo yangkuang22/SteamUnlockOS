@@ -2,6 +2,7 @@
 # SLSsteam-Plus 健康检查 —— 任何时候出问题先跑这个
 # 用法: bash ~/steam-toolkit/scripts/healthcheck.sh
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 SLSDIR="$HOME/.local/share/SLSsteam"
 STEAMCFG="$HOME/.local/share/Steam/config"
 CONFIGDIR="$HOME/.config/SLSsteam"
@@ -104,8 +105,7 @@ else
 fi
 echo
 echo "--- 11. 启动器日志 ---"
-_launcher_log="$HOME/steam-toolkit/logs/launcher.log"
-[ -f "$_launcher_log" ] || _launcher_log="$HOME/.Steam Toolkit-launcher.log"
+_launcher_log="$ROOT/logs/launcher.log"
 [ -f "$_launcher_log" ] && tail -3 "$_launcher_log" | sed 's/^/  /' || p "启动器日志" "暂无"
 echo
 echo "=============================================="
@@ -115,5 +115,5 @@ if [ "$err" -gt 0 ]; then
     echo
     echo "有错误！试试无注入启动（安全网）:"
     echo "    ~/.local/bin/steam-noinject"
-    echo "恢复手册: cat ~/steam-toolkit/docs/恢复手册.md"
+    echo "恢复手册: cat $ROOT/docs/恢复手册.md"
 fi

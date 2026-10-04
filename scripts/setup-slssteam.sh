@@ -13,11 +13,12 @@
 # 用法：bash ~/steam-toolkit/scripts/setup-slssteam.sh
 # ============================================================================
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 
 SLS_HOME="$HOME/.local/share/SLSsteam"
 SLS_CFG_DIR="$HOME/.config/SLSsteam"
 SLS_CFG="$SLS_CFG_DIR/config.yaml"
-BACKUP_DIR="$HOME/steam-toolkit/backup"
+BACKUP_DIR="$ROOT/backup"
 API="https://api.github.com/repos/AceSLS/SLSsteam/releases/latest"
 
 say() { printf '%s\n' "$*"; }

@@ -5,6 +5,7 @@
 # 用法: bash scripts/check-after-steam-update.sh [--fix]
 # ============================================================
 set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 SLSDIR="$HOME/.local/share/SLSsteam"
 LOG="$HOME/.SLSsteam.log"
 FIX=0
@@ -58,7 +59,7 @@ fi
 echo
 
 # 编译环境还在吗
-if [ -d "$HOME/slsplus-build" ] && [ -f "$HOME/steam-toolkit/buildenv.sh" ]; then
+if [ -d "$HOME/slsplus-build" ] && [ -f "$ROOT/buildenv.sh" ] && [ -d "$ROOT/buildtools/wrappers" ]; then
     echo "✓ 编译环境在（$HOME/slsplus-build）"
     echo "  当前编译产物: $(stat -c%s "$HOME/slsplus-build/bin/SLSsteam.so" 2>/dev/null || echo '无') 字节"
 else
@@ -72,7 +73,13 @@ if [ "${NEED_FIX:-0}" = "1" ]; then
     echo "=================================================="
     if [ "$FIX" = "1" ]; then
         echo "  开始重新编译（约 1-5 分钟，取决于改动量）…"
-        source "$HOME/steam-toolkit/buildenv.sh" 2>/dev/null
+        # ★ 工具链没加载上就绝不编译：否则会用系统 gcc（无 32 位支持）编译失败，
+        #   并被误报成"上游还没适配"，把排查方向带偏
+        if ! . "$ROOT/buildenv.sh" || [ ! -d "${SLSU_TOOLS:-}/wrappers" ]; then
+            echo "  ✗ 32 位工具链不可用（${SLSU_TOOLS:-未设置}）"
+            echo "     先重建工具链: bash $ROOT/scripts/build-slsteam-plus.sh"
+            exit 1
+        fi
         cd "$HOME/slsplus-build" || exit 1
         if make -j"$(nproc)" bin/SLSsteam.so bin/library-inject.so 2>&1 | tail -5; then
             cp bin/SLSsteam.so bin/library-inject.so "$SLSDIR/" && echo "  ✓ 已安装新编译的库"
@@ -83,7 +90,7 @@ if [ "${NEED_FIX:-0}" = "1" ]; then
         fi
     else
         echo "  跑这个自动修: bash $0 --fix"
-        echo "  或者手动: source ~/buildenv.sh && cd ~/slsplus-build && make -j\$(nproc) && cp bin/*.so ~/.local/share/SLSsteam/"
+        echo "  或者手动: source $ROOT/buildenv.sh && cd ~/slsplus-build && make -j\$(nproc) && cp bin/*.so ~/.local/share/SLSsteam/"
     fi
 else
     echo "✓ 一切正常，不需要处理"

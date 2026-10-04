@@ -15,13 +15,14 @@
 #   bash scripts/clean-game-leftovers.sh <appid> --apply  # 实际清理
 # ============================================================
 set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 APPID="${1:-}"
 APPLY="${2:-}"
 [ -n "$APPID" ] || { echo "用法: $0 <appid> [--apply]"; exit 1; }
 echo "$APPID" | grep -qE '^[0-9]+$' || { echo "appid 必须是数字"; exit 1; }
 
 STEAM="$HOME/.local/share/Steam"
-BAK="$HOME/steam-toolkit/backup/leftover-$APPID"
+BAK="$ROOT/backup/leftover-$APPID"
 FOUND=0
 
 find_and_handle() {

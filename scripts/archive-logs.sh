@@ -9,6 +9,7 @@
 # 用法: bash scripts/archive-logs.sh
 # ============================================================
 set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 项目根目录：从脚本位置推导，不写死目录名（新旧安装都适用）
 cd "$(dirname "$0")/.." || exit 1
 
 DEST="logs/history"
@@ -18,13 +19,13 @@ mkdir -p "$DEST"
 n=0
 for f in "$HOME"/.SLSsteam.log.before-* "$HOME"/.SLSsteam.log.prev \
          "$HOME"/.SLSsteam.log.crash-session \
-         "$HOME"/.Steam Toolkit-launcher.log* \
+         "$HOME/.Steam Toolkit-launcher.log"* "$HOME"/.SteamUnlockOS-launcher.log* \
          "$HOME"/SteamUnlockOS/logs/launcher.log.*; do
     [ -f "$f" ] || continue
     mv "$f" "$DEST/" && n=$((n + 1))
 done
 # 轮转当前 launcher.log（超过 1MB 就归档）
-_ll="$HOME/steam-toolkit/logs/launcher.log"
+_ll="$ROOT/logs/launcher.log"
 if [ -f "$_ll" ] && [ "$(stat -c%s "$_ll" 2>/dev/null || echo 0)" -gt 1048576 ]; then
     mv "$_ll" "$DEST/launcher.log.$(date +%Y%m%d-%H%M%S)" && n=$((n + 1))
     echo "  launcher.log 超过 1MB，已轮转"

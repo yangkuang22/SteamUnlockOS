@@ -72,7 +72,7 @@ def prepare(appid: int, branch: str = "public", verbose: bool = True) -> dict:
     log(f"  社区密钥: {len(keys)} 个有密钥, {len(missing)} 个无密钥 {missing}")
 
     # 备份 config.vdf
-    bak = Path.home() / "SteamUnlockOS/backup/config.vdf.autobak"
+    bak = Path(__file__).resolve().parent.parent / "backup/config.vdf.autobak"
     bak.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(cfg_path, bak)
 

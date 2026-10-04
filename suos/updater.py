@@ -22,7 +22,7 @@ STEAM = Path.home() / ".local/share/Steam"
 DEPOTCACHE = STEAM / "depotcache"
 LUA_SLS = Path.home() / ".config/SLSsteam/lua"
 LUA_STEAM = STEAM / "config/lua"
-BACKUP = Path.home() / "SteamUnlockOS/backup/updates"
+BACKUP = Path(__file__).resolve().parent.parent / "backup/updates"   # 项目目录下
 UA = {"User-Agent": "Mozilla/5.0"}
 
 

@@ -31,7 +31,7 @@ LUA_DIRS = [
     Path.home() / ".config/SLSsteam/lua",
     STEAM / "config/lua",
 ]
-ARCHIVE_DIR = Path.home() / "SteamUnlockOS/backup/depotcache-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "backup/depotcache-archive"   # 项目目录下
 KEEP_ARCHIVES = 2          # 只保留最近 N 个归档（防止无限堆积）
 
 

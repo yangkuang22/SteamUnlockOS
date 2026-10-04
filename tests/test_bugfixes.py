@@ -549,3 +549,100 @@ class TestFetchDlcsFiltering(unittest.TestCase):
         # 抽查几个已知的真 DLC
         for d in (1753180, 1753181, 2133120):
             self.assertIn(d, dlcs)
+
+
+# ══════════════════════════════════════════════════════════════
+#  改名残留：项目目录被写死（实机上项目在 ~/SteamUnlockOS，
+#  仓库代码却写死 ~/steam-toolkit / ~/SteamUnlockOS / /home/deck）
+# ══════════════════════════════════════════════════════════════
+
+import subprocess  # noqa: E402
+
+def _working_bash() -> "str | None":
+    """找一个【真能跑】的 bash（Windows 沙箱里 msys bash 可能起不来）"""
+    b = shutil.which("bash")
+    if not b:
+        return None
+    try:
+        r = subprocess.run([b, "-c", "echo ok"], capture_output=True, text=True, timeout=15)
+        return b if r.stdout.strip() == "ok" else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_BASH = _working_bash()
+
+
+def _code_files() -> list[Path]:
+    files = [ROOT / "webui_core.py", ROOT / "buildenv.sh"]
+    files += sorted((ROOT / "suos").glob("*.py"))
+    files += sorted((ROOT / "scripts").glob("*.sh"))
+    return [f for f in files if f.is_file()]
+
+
+class TestPathsHardcodedInstallDir(unittest.TestCase):
+    """项目目录必须从文件自身位置推导，不能写死任何一个目录名。
+
+    实机复现（SteamOS，项目在 ~/SteamUnlockOS）:
+      · healthcheck 第 11 项"启动器日志: 暂无"（日志明明在 ~/SteamUnlockOS/logs/）
+      · fix-injection.sh status 报"备份: ✗ 不存在" → install/remove 拒绝执行
+      · buildenv.sh 指向不存在的 ~/steam-toolkit/buildtools → --fix 必定编译失败
+    """
+
+    # 写死的"安装目录 + 项目子目录"形式（不含 install.sh 的默认安装目录、兜底候选）
+    BAD = re.compile(
+        r'(\$HOME"?|~|/home/deck)/steam-toolkit/(backup|logs|buildtools|buildenv|docs)'
+        r'|SteamUnlockOS/(backup|buildtools|buildenv)'
+        r'|/home/deck/')
+
+    def test_no_hardcoded_project_dir(self) -> None:
+        bad = []
+        for f in _code_files():
+            for i, line in enumerate(
+                    f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                if self.BAD.search(line):
+                    bad.append(f"{f.relative_to(ROOT)}:{i}: {line.strip()[:80]}")
+        self.assertEqual(bad, [], "仍有写死的项目目录:\n" + "\n".join(bad))
+
+    def test_python_backup_dirs_under_repo(self) -> None:
+        from suos import depotcache_clean, updater
+        for name, p in (("webui_core.BACKUP", core.BACKUP),
+                        ("depotcache_clean.ARCHIVE_DIR", depotcache_clean.ARCHIVE_DIR),
+                        ("updater.BACKUP", updater.BACKUP)):
+            self.assertTrue(Path(p).resolve().is_relative_to(ROOT),
+                            f"{name} = {p} 不在项目目录 {ROOT} 下")
+
+    def test_scripts_define_root_before_use(self) -> None:
+        for f in sorted((ROOT / "scripts").glob("*.sh")):
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+            uses = [i for i, l in enumerate(lines) if "$ROOT" in l and not l.startswith("ROOT=")]
+            if not uses:
+                continue
+            defs = [i for i, l in enumerate(lines) if l.startswith("ROOT=")]
+            self.assertTrue(defs and defs[0] < uses[0], f"{f.name}: $ROOT 在定义前被使用")
+
+
+@unittest.skipUnless(_BASH, "没有可用的 bash")
+class TestBuildenvSelfLocate(unittest.TestCase):
+    """buildenv.sh 必须定位到自己所在的项目目录，且在 set -u 下 source 不中断。
+
+    回归: 原来写死 SLSU_ROOT=/home/deck/steam-toolkit；且 $LD_LIBRARY_PATH 未定义时
+    在 set -u 的调用方里 source 会直接中断（check-after-steam-update.sh 就是 set -u）。
+    """
+
+    def test_locates_own_dir_under_set_u(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "某个任意目录名"
+            (proj / "buildtools/wrappers").mkdir(parents=True)
+            shutil.copy2(ROOT / "buildenv.sh", proj / "buildenv.sh")
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("SLSU_ROOT", "LD_LIBRARY_PATH", "LIBRARY_PATH")}
+            r = subprocess.run(
+                [_BASH, "-uc",
+                 '. "$1/buildenv.sh" && [ "$SLSU_TOOLS" = "$(cd "$1" && pwd)/buildtools" ] '
+                 '&& echo OK || echo "BAD SLSU_TOOLS=$SLSU_TOOLS"',
+                 "_", proj.as_posix()],
+                capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
+            self.assertIn("OK", r.stdout, r.stdout + r.stderr)
