@@ -76,56 +76,26 @@ class TestSteamDetection(unittest.TestCase):
         self.assertGreater(checked, 0, "没有解析出任何 InstalledDepots")
 
 
-class TestSLSConfigRoundtrip(unittest.TestCase):
-    def test_write_read_add_remove(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "SLSsteam" / "config.yaml"
-            cfg = slsconfig.SLSConfig(path).load()
-            self.assertFalse(cfg.exists())
-            cfg.add_app(379720, additional=True)
-            cfg.add_app(440)
-            cfg.set_manifest(379721, 123456789)
-            cfg.set_cdkey(379721, "ab" * 32)
-            cfg.set_token(379720, "tok123")
-            cfg.save()
+class TestSLSConfigReadonly(unittest.TestCase):
+    """SLSConfig 现在是只读视图（入库写入由 webui_core 负责，直接写 config.toml）。
+    这里验证它能正确读出 config.toml 里的 AppIds。"""
 
-            self.assertTrue(path.is_file())
-            again = slsconfig.SLSConfig(path).load()
-            self.assertEqual(again.owned(), {379720, 440})
-            self.assertEqual(again.data["ManifestIds"][379721], 123456789)
-            self.assertEqual(again.data["CDKeys"][379721], "ab" * 32)
-            self.assertEqual(again.data["AppTokens"][379720], "tok123")
-            # 幂等：重复添加不产生重复项
-            again.add_app(440)
-            again.save()
-            third = slsconfig.SLSConfig(path).load()
-            self.assertEqual(third.data["AppIds"].count(440), 1)
-
-    def test_backup_created(self):
+    def test_reads_owned_from_toml(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config.yaml"
-            path.write_text("AppIds:\n  - 440\n", encoding="utf-8")
-            cfg = slsconfig.SLSConfig(path).load()
-            backup = cfg.backup(Path(tmp) / "backup")
-            self.assertIsNotNone(backup)
-            self.assertTrue(backup.is_file())
-            self.assertIn("440", backup.read_text(encoding="utf-8"))
-
-    def test_preserves_unknown_keys(self):
-        """不能把用户配置里我们没管的字段弄丢。"""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config.yaml"
-            path.write_text(
-                "FakeWalletBalance: 12345\nAppIds:\n  - 440\nCustomNote: hello\n",
+            toml = Path(tmp) / "config.toml"
+            toml.write_text(
+                "AppIds = [440, 379720]\nAdditionalApps = [730]\n",
                 encoding="utf-8",
             )
-            cfg = slsconfig.SLSConfig(path).load()
-            cfg.add_app(730)
-            cfg.save()
-            again = slsconfig.SLSConfig(path).load()
-            self.assertEqual(again.data["FakeWalletBalance"], 12345)
-            self.assertEqual(again.data["CustomNote"], "hello")
-            self.assertEqual(again.owned(), {440, 730})
+            cfg = slsconfig.SLSConfig(toml).load()
+            self.assertTrue(cfg.exists())
+            self.assertEqual(cfg.owned(), {440, 379720, 730})
+
+    def test_missing_config_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = slsconfig.SLSConfig(Path(tmp) / "config.toml").load()
+            self.assertFalse(cfg.exists())
+            self.assertEqual(cfg.owned(), set())
 
 
 class TestAppOfDepot(unittest.TestCase):

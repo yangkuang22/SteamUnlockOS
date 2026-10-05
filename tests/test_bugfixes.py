@@ -303,14 +303,12 @@ class TestSLSConfigToml(unittest.TestCase):
             # 显式传 path 时不探测 TOML（保持原行为）
             self.assertFalse(cfg.exists())
 
-    def test_owned_merges_both(self):
-        """owned() 应该合并 YAML 与 TOML"""
+    def test_owned_reads_toml(self):
+        """owned() 从 config.toml 读 AppIds + AdditionalApps"""
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            p = d / "config.yaml"
-            p.write_text("AppIds:\n  - 111\nAdditionalApps:\n  - 222\n")
-            cfg = slsconfig.SLSConfig(p)
-            cfg.load()
+            p = Path(tmp) / "config.toml"
+            p.write_text("AppIds = [111]\nAdditionalApps = [222]\n")
+            cfg = slsconfig.SLSConfig(p).load()
             self.assertEqual(cfg.owned(), {111, 222})
 
     def test_toml_detection_when_no_path(self):

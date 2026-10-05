@@ -2,16 +2,18 @@
 
 用法（在 ~/steam-toolkit 下）：
     python3 -m suos.cli status                    看环境
-    python3 -m suos.cli plan 379720               只演算不落盘：这个游戏缺什么
-    python3 -m suos.cli install 379720            入库（写 SLSsteam 配置 + 放清单）
-    python3 -m suos.cli install 379720 --apply    真正落盘
+    python3 -m suos.cli install-mh3 379720        ★ 一键入库（推荐）
+    python3 -m suos.cli install-mh3 379720 --dlc  入库并带上全部 DLC
+    python3 -m suos.cli install-mh3 379720 --dry-run   只预览数据，不写入
     python3 -m suos.cli list                      列出本地已备好清单、可入库的游戏
+
+所有入库命令（install / install-mh3 / prepare / install-server）现在都走
+同一条实现 webui_core.install()，与图形界面完全一致。
 """
 
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,69 @@ from .slsconfig import SLSConfig, find_slssteam
 
 BACKUP_DIR = Path(__file__).resolve().parent.parent / "backup"
 MANIFEST_DIR = Path(__file__).resolve().parent.parent / "manifests"
+
+
+# ══════════════════════════════════════════════════════════════
+#  统一入库入口
+#
+#  所有"往 Steam 里加游戏"的命令（install / install-mh3 / prepare /
+#  install-server）都走这里 → webui_core.install()，和图形界面完全同一条
+#  代码路径、同一套防护（清单可用性硬门槛、下载重试、占位密钥安全红线、
+#  Lua 格式对齐）。历史上这里有三条各自残缺的独立路径，是"修好一个游戏、
+#  下一个又坏"的根源，已合并。
+# ══════════════════════════════════════════════════════════════
+
+def _webui_core():
+    """加载仓库根目录下的 webui_core（唯一的入库实现）。"""
+    root = str(Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import webui_core  # noqa: E402
+    return webui_core
+
+
+def _cli_preview(appid: int) -> int:
+    """只查不写：这个 appid 有没有可用数据。"""
+    r = _webui_core().search(appid)
+    print(f"appid     : {r['appid']}")
+    print(f"游戏名    : {r.get('name') or '（查不到）'}")
+    print(f"有数据    : {'是' if r.get('found') else '否'}")
+    print(f"密钥      : {r.get('depot_count', 0)} 个"
+          f"（来源 {', '.join(r.get('key_sources') or []) or '无'}）")
+    print(f"已入库    : {'是' if r.get('installed') else '否'}")
+    msg = r.get("message")
+    if msg:
+        print(f"\n{msg}")
+    print("\n（这是预览，未写入任何文件。真正入库请去掉 --dry-run / 加 --apply）")
+    return 0 if r.get("found") else 1
+
+
+def _cli_install(appid: int, include_dlc: bool) -> int:
+    """真正入库：webui_core.install()。"""
+    print(f"== 入库 appid {appid}" + ("（含 DLC）" if include_dlc else "") + " ==")
+    res = _webui_core().install(appid, include_dlc=include_dlc)
+    for s in res.get("steps", []):
+        print(f"  {s}")
+    print()
+    print(res.get("message", ""))
+    if res.get("ok"):
+        print("\n下一步：重启 Steam（~/.local/share/SLSsteam/path/steam），再在库里点「安装」")
+        return 0
+    print("\n⚠ 入库未完成——请勿重启 Steam，按上面的提示稍后重试")
+    return 1
+
+
+def _do_install(args: argparse.Namespace, *, preview_default: bool) -> int:
+    """统一调度：决定预览还是真入库，然后都走 webui_core。
+
+    preview_default=True  → 不加 --apply 就只预览（install / install-server 的历史行为）
+    preview_default=False → 直接入库（prepare / install-mh3 的历史行为）
+    --dry-run 任何情况下都只预览。
+    """
+    appid = int(args.appid)
+    if getattr(args, "dry_run", False) or (preview_default and not getattr(args, "apply", False)):
+        return _cli_preview(appid)
+    return _cli_install(appid, include_dlc=getattr(args, "dlc", False))
 
 
 @dataclass
@@ -224,43 +289,8 @@ def cmd_plan(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
 
 
 def cmd_install(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
-    plan = build_plan(paths, args.appid)
-    if not plan.depots:
-        print(f"✗ appid {args.appid} 在本地找不到清单，无法入库。")
-        return 1
-
-    print(f"计划入库 appid {args.appid}：{len(plan.depots)} 个 depot")
-    if not args.apply:
-        print("\n（这是预演，未写入任何文件。加 --apply 真正执行）")
-        return cmd_plan(paths, args)
-
-    cfg = SLSConfig().load()
-    backup = cfg.backup(BACKUP_DIR)
-    if backup:
-        print(f"✓ 已备份原配置 -> {backup}")
-
-    # 1) 声明拥有权
-    cfg.add_app(args.appid, additional=True)
-    # 2) 清单覆盖 + 密钥
-    copied = 0
-    for d in plan.depots:
-        cfg.set_manifest(d.depotid, d.gid)
-        if d.key:
-            cfg.set_cdkey(d.depotid, d.key)
-        src = paths.depotcache / d.manifest_name
-        if not src.is_file() and (MANIFEST_DIR / d.manifest_name).is_file():
-            paths.depotcache.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(MANIFEST_DIR / d.manifest_name, paths.depotcache / d.manifest_name)
-            copied += 1
-    written = cfg.save()
-    print(f"✓ 已写入 {written}")
-    print(f"  声明 AppIds/AdditionalApps: {args.appid}")
-    print(f"  ManifestIds 条目          : {len(plan.depots)}")
-    print(f"  CDKeys 条目               : {sum(1 for d in plan.depots if d.key)}")
-    if copied:
-        print(f"  从裸清单目录补进 depotcache: {copied} 个")
-    print("\n下一步：用带注入的方式重启 Steam（SLSsteam），然后库里就会出现该游戏。")
-    return 0
+    """入库某个 appid（统一走 webui_core）。不加 --apply 只预览。"""
+    return _do_install(args, preview_default=True)
 
 
 def cmd_setup_slssteam(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
@@ -330,20 +360,8 @@ def cmd_list_branches(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
 
 
 def cmd_mh3(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
-    """★ 从 ManifestHub3 一键准备（数据最全：lua+密钥+清单）"""
-    from . import installer2
-    r = installer2.install(args.appid, dry_run=getattr(args, "dry_run", False))
-    if not r.get("ok"):
-        print(f"✗ 失败: {r.get('reason')}")
-        print("  如果提示 no_branch，说明这个游戏社区还没收录（通常是新游戏）")
-        return 1
-    if not r.get("dry_run"):
-        print()
-        print("== 下一步 ==")
-        print("  1. 重启 Steam（必须！密钥只在启动时读）")
-        print("     ~/.local/share/SLSsteam/path/steam")
-        print("  2. 库里搜索游戏 → 点「安装」→ 自动下载")
-    return 0
+    """★ 一键入库（多源聚合：ManifestHub3 + 社区密钥库 + 服务端）。"""
+    return _do_install(args, preview_default=False)
 
 
 def cmd_mh3_check(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
@@ -360,123 +378,13 @@ def cmd_mh3_check(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
 
 
 def cmd_prepare(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
-    """★ 一键准备：SteamUnlock 服务端 + 社区密钥库 → 写配置，然后重启 Steam 即可下载
+    """★ 一键入库（统一走 webui_core）。"""
+    return _do_install(args, preview_default=False)
 
-    这是实测有效的流程（紫色晶石 625960 完整下载 853MB 验证通过）
-    """
-    from . import installer
-    appid = args.appid
-    print(f"== 为 appid {appid} 准备下载环境 ==")
-    try:
-        r = installer.prepare(appid, branch=getattr(args, "branch", "public"))
-    except Exception as e:
-        print(f"✗ 失败: {e}")
-        return 1
-    print()
-    print("== 完成！下一步 ==")
-    print("  1. 重启 Steam（关键！密钥只在启动时读取）")
-    print(f"     ~/.local/share/SLSsteam/path/steam")
-    print("  2. 在库里搜索游戏，点「安装」")
-    print("  3. 会自动开始下载（不再显示'内容加密'）")
-    if r["missing"]:
-        print()
-        print(f"  注意: 有 {len(r['missing'])} 个 depot 无密钥，已从清单覆盖中跳过：")
-        print(f"        {r['missing']}")
-        print("        （在 SteamUnlock 里这些通常是 40 字节的空 depot，会以 0 字节形式占位）")
-    return 0
 
 def cmd_install_server(paths: steam.SteamPaths, args: argparse.Namespace) -> int:
-    """从服务端取数据并**完整**入库：配置 + 许可证密钥 + 清单文件 + ACF。
-
-    这是"能下载"的完整四件套（顺序即依赖关系）：
-      1. SLSsteam 配置：AppIds（所有权放行）+ ManifestIds（版本覆写）+ CDKeys
-      2. Steam 的 config.vdf：写入 depot **解密密钥**（Steam 靠这个解下载内容）
-      3. depotcache/：写入 **.manifest 文件本体**（Steam 靠这个建 depot 挂载点）
-      4. steamapps/：ACF（保留 Steam 自己写的那份，不动它）
-    """
-    from . import manifests, server_api
-
-    cache = Path(__file__).resolve().parent.parent / "cache"
-    try:
-        payload = server_api.install_plan(args.appid, cache_dir=cache)
-    except Exception as exc:
-        print(f"✗ 拉取服务端数据失败: {exc}")
-        return 1
-
-    print(payload.describe())
-    if not args.apply:
-        print("\n（预演，未落盘。加 --apply 真正执行）")
-        return 0
-
-    # ---------- 1) SLSsteam 配置 ----------
-    cfg = SLSConfig().load()
-    backup = cfg.backup(BACKUP_DIR)
-    if backup:
-        print(f"✓ 备份 SLSsteam 配置 -> {backup}")
-    cfg.add_app(payload.appid, additional=False)   # AppIds：能下载；AdditionalApps 会破坏下载
-    for dlc in payload.dlcs:
-        cfg.add_app(dlc, additional=False)
-    for d in payload.depots:
-        if d.gid:
-            cfg.set_manifest(d.depotid, d.gid)
-        if d.key:
-            cfg.set_cdkey(d.depotid, d.key)
-    if payload.app_token:
-        cfg.set_token(payload.appid, payload.app_token)
-    cfg.data["SafeMode"] = "yes"
-    print(f"✓ SLSsteam 配置: {cfg.save()}")
-
-    # ---------- 2) Steam config.vdf 里的 depot 解密密钥 ----------
-    cfg_vdf = paths.config_vdf
-    if cfg_vdf.is_file():
-        import shutil as _sh
-        _sh.copy2(cfg_vdf, BACKUP_DIR / f"config.vdf.{__import__('time').strftime('%Y%m%d-%H%M%S')}.bak")
-        tree = vdf.load(cfg_vdf)
-        depots_node = (
-            tree.get("InstallConfigStore", {})
-            .get("Software", {})
-            .get("Valve", {})
-            .get("Steam", {})
-            .setdefault("depots", {})
-        )
-        wrote = 0
-        for d in payload.depots:
-            if not d.key:
-                continue
-            node = depots_node.setdefault(str(d.depotid), {})
-            if node.get("DecryptionKey") != d.key:
-                node["DecryptionKey"] = d.key
-                wrote += 1
-        if wrote:
-            cfg_vdf.write_text(vdf.dumps(tree) + "\n", encoding="utf-8")
-            print(f"✓ config.vdf: 写入 {wrote} 个 depot 解密密钥")
-        else:
-            print("✓ config.vdf: 密钥已是最新")
-
-    # ---------- 3) 清单文件本体 ----------
-    placed = failed = 0
-    for d in payload.depots:
-        if not d.gid:
-            continue
-        local = paths.depotcache / f"{d.depotid}_{d.gid}.manifest"
-        if local.is_file():
-            print(f"  清单已在本地: {local.name}")
-            placed += 1
-            continue
-        print(f"  获取清单 depot {d.depotid} gid {d.gid} …")
-        res = manifests.fetch_manifest(payload.appid, d.depotid, d.gid)
-        if res is None:
-            failed += 1
-            continue
-        manifests.install_manifest(paths.depotcache, d.depotid, d.gid, res.data)
-        print(f"    ✓ {res.provider}: {res.size} 字节")
-        placed += 1
-
-    print(f"\n清单: 就位 {placed} 个" + (f"，失败 {failed} 个" if failed else ""))
-    print(f"密钥: {sum(1 for d in payload.depots if d.key)} 个")
-    print(f"所有权: appid {payload.appid}" + (f" + {len(payload.dlcs)} 个 DLC" if payload.dlcs else ""))
-    print("\n下一步：bash scripts/restart-steam-injected.sh，然后在 Steam 里点安装")
-    return 0 if not failed else 1
+    """从服务端取数据并入库（统一走 webui_core）。不加 --apply 只预览。"""
+    return _do_install(args, preview_default=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -494,9 +402,10 @@ def main(argv: list[str] | None = None) -> int:
     p_plan.add_argument("appid", type=int)
     p_plan.set_defaults(func=cmd_plan)
 
-    p_install = sub.add_parser("install", help="入库某个 appid")
+    p_install = sub.add_parser("install", help="入库某个 appid（不加 --apply 只预览）")
     p_install.add_argument("appid", type=int)
     p_install.add_argument("--apply", action="store_true", help="真正写入（默认只预演）")
+    p_install.add_argument("--dlc", action="store_true", help="同时入库全部 DLC")
     p_install.set_defaults(func=cmd_install)
 
     p_setup = sub.add_parser("setup-slssteam", help="安装 SLSsteam 的说明")
@@ -506,13 +415,15 @@ def main(argv: list[str] | None = None) -> int:
     p_fetch.add_argument("appid", type=int)
     p_fetch.set_defaults(func=cmd_fetch)
 
-    p_prep = sub.add_parser("prepare", help="★ 一键准备下载环境（写密钥+清单配置，然后重启 Steam）")
+    p_prep = sub.add_parser("prepare", help="★ 一键入库（等同 install-mh3，已统一）")
     p_prep.add_argument("appid", type=int, help="Steam AppID")
-    p_prep.add_argument("--branch", default="public", help="版本分支（默认 public=最新；可用 list-branches 查看）")
+    p_prep.add_argument("--dlc", action="store_true", help="同时入库全部 DLC")
+    p_prep.add_argument("--dry-run", action="store_true", help="只看不写")
     p_prep.set_defaults(func=cmd_prepare)
 
-    p_mh3 = sub.add_parser("install-mh3", help="★ 从 ManifestHub3 一键准备（推荐，数据最全）")
+    p_mh3 = sub.add_parser("install-mh3", help="★ 一键入库（推荐，多源聚合，数据最全）")
     p_mh3.add_argument("appid", type=int)
+    p_mh3.add_argument("--dlc", action="store_true", help="同时入库全部 DLC")
     p_mh3.add_argument("--dry-run", action="store_true", help="只看不写")
     p_mh3.set_defaults(func=cmd_mh3)
 
@@ -534,9 +445,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p.set_defaults(func=cmd_update)
 
-    p_isrv = sub.add_parser("install-server", help="从服务端取数据并入库（推荐）")
+    p_isrv = sub.add_parser("install-server", help="入库某个 appid（等同 install，已统一）")
     p_isrv.add_argument("appid", type=int)
     p_isrv.add_argument("--apply", action="store_true", help="真正写入（默认只预演）")
+    p_isrv.add_argument("--dlc", action="store_true", help="同时入库全部 DLC")
     p_isrv.set_defaults(func=cmd_install_server)
 
     args = parser.parse_args(argv)
