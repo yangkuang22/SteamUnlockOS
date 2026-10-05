@@ -109,14 +109,18 @@ def prepare(appid: int, branch: str = "public", verbose: bool = True) -> dict:
              f"addappid({appid})"]
     for d in plan.depots:
         if d.depotid in keys:
-            lines.append(f'addappid({d.depotid}, 1, "{keys[d.depotid]}")')
+            # 格式对齐真机验证可用的形式：addappid(depot, 0, "64hex")
+            # （SLSsteam 存不存密钥只看 key 是否 64 hex，第二参数忽略；用 0 与 webui 一致）
+            lines.append(f'addappid({d.depotid},0,"{keys[d.depotid]}")')
         else:
             lines.append(f"addappid({d.depotid})")
     lines.append("")
     for d in plan.depots:
         gid = branch_gids.get(d.depotid) or d.gid
         if d.depotid in keys and gid:
-            lines.append(f'setmanifestid({d.depotid}, "{gid}")')
+            # ★ 必须大写 setManifestid：updater/depotcache_clean 都按大写 M 正则匹配，
+            #   小写会让这些游戏对"更新检查"和"清理白名单"隐形（清单会被误删）。
+            lines.append(f'setManifestid({d.depotid},"{gid}")')
     lua = "\n".join(lines) + "\n"
 
     for ld in LUA_DIRS:

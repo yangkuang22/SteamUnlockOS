@@ -90,8 +90,14 @@ def fetch_all(appid: int):
         b = fetch_file(appid, "key.vdf")
         if b:
             out["key_vdf"] = b.decode("utf-8", "replace")
+            # ★ 只收 64 hex（32 字节 AES key）。SLSsteam 二进制实证：
+            #   "addappid(...): invalid key (need 64 hex chars), ignoring" ——
+            #   非 64 位的密钥（如 96 位的服务端内部格式）会被 Steam/SLSsteam 静默丢弃，
+            #   写进去等于没写，还会让人误以为"有密钥"。所以在源头就过滤掉。
             for m in re.finditer(r'"(\d+)"\s*\{\s*"DecryptionKey"\s*"([0-9a-fA-F]+)"', out["key_vdf"]):
-                out["keys"][int(m.group(1))] = m.group(2)
+                depid, key = int(m.group(1)), m.group(2)
+                if len(key) == 64:
+                    out["keys"][depid] = key.lower()
     # 元数据
     if f"{appid}.json" in names:
         b = fetch_file(appid, f"{appid}.json")

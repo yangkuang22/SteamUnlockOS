@@ -529,9 +529,26 @@ def _depots_needing_placeholder(r: dict) -> list[int]:
       它来自 SteamUnlock API 的 appinfo.depots（有 public 清单的）
       + config.depots。这两个才是 Valve 权威的 depot 列表。
       （不要用 ManifestHub3 的 meta.depot —— 它不包含这些小 depot！）
+
+    ★★ 安全红线（本次修复新增）：只给【没有可下载内容】的 depot 写占位。
+       全零密钥 = 用全零 AES 去解密。对于几十字节的空 marker depot 无害
+       （根本没有加密内容走解密路径）；但对于有真实清单/内容的 depot，
+       全零密钥会让 Steam 解出垃圾数据 → 完整性校验失败 → 下载损坏甚至崩溃。
+       所以凡是出现在清单列表 / lua 的 setManifestid 里的 depot（= 有内容），
+       一律不写占位，让它老实地走真密钥或如实失败。
     """
     depots = r.get("depots") or []
     keys_int = {int(k) for k in (r.get("keys") or {}) if str(k).isdigit()}
+
+    # 有内容的 depot（有清单 = 有要解密的数据），绝不写零密钥
+    content_depots: set[int] = set()
+    for item in (r.get("manifests") or []):
+        try:
+            content_depots.add(int(item[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    for m in re.finditer(r'setManifestid\((\d+),', r.get("lua") or ""):
+        content_depots.add(int(m.group(1)))
 
     out: list[int] = []
     for d in depots:
@@ -541,6 +558,8 @@ def _depots_needing_placeholder(r: dict) -> list[int]:
             continue
         if dep in keys_int:
             continue
+        if dep in content_depots:
+            continue  # 有内容的 depot 写零密钥会损坏下载，跳过
         out.append(dep)
 
     # 再排除 config.vdf 里已经有非零密钥的（避免零密钥覆盖真密钥）
@@ -797,6 +816,28 @@ def install(appid: int, include_dlc: bool = False) -> dict:
         except Exception as exc:  # noqa: BLE001
             warn(f"清单本地化检查失败: {str(exc)[:60]}")
 
+    # ── 4.95 ★ 清单可用性硬门槛（核心修复）──
+    #   走到这里，lua 里每个 setManifestid 的清单都应该已经落到 depotcache。
+    #   如果还有缺的，这个游戏【必定】下载失败 —— 真机 content_log 实证的死亡链：
+    #     BYldRequestDepotManifest ... Failed to get manifest request code 'Access Denied'
+    #     → update canceled : Failed downloading manifests (No connection)   ← "无互联网连接"
+    #     → scheduler finished : removed (result Missing decryption key)      ← "内容仍处于加密状态"
+    #     → 反复重试把 Steam 下载状态机搞崩溃
+    #   以前这里只 warn 然后报"入库完成"，用户去重启 Steam 必然踩雷。
+    #   现在：清单缺失 = 致命。宁可让用户稍后重试，也不交付一个必坏的配置。
+    if lua_text:
+        final_pins = dict(re.findall(r'setManifestid\((\d+),\s*"(\d+)"\)', lua_text))
+        still_missing = [
+            f"{dep}_{gid}"
+            for dep, gid in final_pins.items()
+            if not (DEPOTCACHE / f"{dep}_{gid}.manifest").is_file()
+        ]
+        if still_missing:
+            shown = ", ".join(still_missing[:6]) + (
+                f" 等 {len(still_missing)} 个" if len(still_missing) > 6 else "")
+            fatal(f"清单缺失，游戏无法下载（Steam 会报无连接/内容加密）: {shown}。"
+                  f"多为数据源临时不可用 —— 请稍后重试入库，现在不要重启 Steam")
+
     # ── 5. Lua（致命）──
     if not lua_text and r.get("keys"):
         lines = [f"addappid({appid})"]
@@ -843,12 +884,17 @@ def install(appid: int, include_dlc: bool = False) -> dict:
                 fatal(f"写 Lua 失败: {str(exc)[:100]}")
 
     # ── 6. AppIds（可选）—— 一次读写搞定本体 + 全部 DLC ──
-    try:
-        n_added = _add_appids_to_toml([appid, *dlcs])
-        res["steps"].append(f"✓ 加入 config.toml 的 AppIds（新增 {n_added} 项"
-                            + (f"，含 {len(dlcs)} 个 DLC" if dlcs else "") + "）")
-    except Exception as exc:  # noqa: BLE001
-        warn(f"写 config.toml 失败: {str(exc)[:60]}")
+    #   ★ 有致命失败（尤其清单缺失）时不授予所有权：否则游戏会出现在库里、
+    #     用户一点安装就走进必坏的下载流程。宁可此刻不显示，也不显示一个下不动的。
+    if res["fatal"]:
+        res["steps"].append("（有致命失败，跳过写 config.toml 的所有权，避免交付必坏配置）")
+    else:
+        try:
+            n_added = _add_appids_to_toml([appid, *dlcs])
+            res["steps"].append(f"✓ 加入 config.toml 的 AppIds（新增 {n_added} 项"
+                                + (f"，含 {len(dlcs)} 个 DLC" if dlcs else "") + "）")
+        except Exception as exc:  # noqa: BLE001
+            warn(f"写 config.toml 失败: {str(exc)[:60]}")
 
     # ── 7. 校验（致命）──
     try:

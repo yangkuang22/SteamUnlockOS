@@ -895,6 +895,10 @@ class TestNameFallbackHeals(TempCorePaths):
         appid = 7777001
         orig_ms, orig_gids, orig_dc = multisource.resolve, updater.latest_gids, core.DEPOTCACHE
         core.DEPOTCACHE = self.tmp / "depotcache"          # 不碰真实 depotcache
+        # 清单可用性现在是硬门槛：预置 pin 的清单，让入库能合法成功，
+        # 这样本测试仍专注于它真正要验证的事——不把兜底名写进记录。
+        core.DEPOTCACHE.mkdir(parents=True, exist_ok=True)
+        (core.DEPOTCACHE / "7777002_123.manifest").write_bytes(b"\xd0\x17\xf6\x71stub")
         multisource.resolve = lambda a, verbose=False: {
             "appid": a, "name": None, "keys": {7777002: "ab" * 32}, "manifests": [],
             "lua": f'addappid({a})\naddappid(7777002,0,"{"ab" * 32}")\n'
@@ -909,6 +913,34 @@ class TestNameFallbackHeals(TempCorePaths):
         self.assertTrue(r["ok"], r)
         rec = json.loads(core.RECORD.read_text(encoding="utf-8"))
         self.assertIsNone(rec[str(appid)]["name"], "不能把兜底名写进 installed.json")
+
+    def test_missing_manifest_is_fatal(self) -> None:
+        """核心修复回归：pin 的清单拿不到时，入库必须判定失败（ok=False），
+        且不得写入所有权 —— 否则游戏出现在库里一点就进必坏的下载流程
+        （真机 content_log: No connection → Missing decryption key → 崩溃）。"""
+        from suos import multisource, updater
+        appid = 7779001
+        orig_ms, orig_gids, orig_dc = multisource.resolve, updater.latest_gids, core.DEPOTCACHE
+        core.DEPOTCACHE = self.tmp / "depotcache-empty"     # 空 depotcache，清单必缺
+        core.DEPOTCACHE.mkdir(parents=True, exist_ok=True)
+        # gid 用一个不存在的值，保证真实 fetch_manifest 也拿不到
+        multisource.resolve = lambda a, verbose=False: {
+            "appid": a, "name": "测试游戏", "keys": {7779002: "cd" * 32}, "manifests": [],
+            "lua": f'addappid({a})\naddappid(7779002,0,"{"cd" * 32}")\n'
+                   f'setManifestid(7779002,"999999999999999999")\n',
+            "sources": {}}
+        updater.latest_gids = lambda a, timeout=25: {}
+        self._resolver("测试游戏")
+        try:
+            r = core.install(appid, include_dlc=False)
+        finally:
+            multisource.resolve, updater.latest_gids, core.DEPOTCACHE = orig_ms, orig_gids, orig_dc
+        self.assertFalse(r["ok"], "清单缺失必须判为失败")
+        self.assertTrue(any("清单缺失" in s for s in r["fatal"]), r["fatal"])
+        # 不得把游戏写进记录（没交付成功就不记录）
+        if core.RECORD.is_file():
+            rec = json.loads(core.RECORD.read_text(encoding="utf-8"))
+            self.assertNotIn(str(appid), rec, "失败的入库不该写进 installed.json")
 
 
 # ══════════════════════════════════════════════════════════════

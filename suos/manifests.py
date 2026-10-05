@@ -36,6 +36,7 @@ BetterSteamTools 的做法（`src/Utils/SteamMetadata/ManifestClient.cpp`）给�
 from __future__ import annotations
 
 import struct
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -82,10 +83,14 @@ def is_steam_manifest(data: bytes) -> bool:
 
 
 def provider_urls(appid: int, depotid: int, gid: int) -> list[tuple[str, str]]:
-    """按优先级返回 (provider 名, URL)。depot 感知的排前面。"""
+    """按优先级返回 (provider 名, URL)。
+
+    luastools 的 `/m/<depot>/<gid>` 排第一 —— 真机实测它是唯一稳定返回干净清单的源
+    （opensteamtool 对未授权请求一律 403）。把它放首位能大幅降低瞬时失败率。
+    """
     return [
-        ("opensteamtool", f"https://manifest.opensteamtool.com/{appid}/{depotid}/{gid}"),
         ("luastools", f"https://manifest.luastools.xyz/m/{depotid}/{gid}"),
+        ("opensteamtool", f"https://manifest.opensteamtool.com/{appid}/{depotid}/{gid}"),
         ("luastools-root", f"https://manifest.luastools.xyz/{depotid}/{gid}"),
         ("opensteamtool-gid", f"https://manifest.opensteamtool.com/{gid}"),
     ]
@@ -97,26 +102,37 @@ def fetch_manifest(
     gid: int,
     *,
     timeout: int = 60,
+    retries: int = 3,
+    backoff: float = 1.5,
 ) -> ManifestResult | None:
-    """依次尝试各清单源，返回第一个有效的清单。全部失败返回 None。"""
+    """依次尝试各清单源，返回第一个有效的清单。全部失败返回 None。
+
+    ★ 每个源重试 `retries` 次（指数退避）。背景：国内网络抖动时单次请求很容易超时，
+      而清单文件本身是存在的 —— 真机案例里同一个清单入库时拿不到、4 分钟后一次就成功。
+      没有重试 = 一次抖动就让整个游戏永久下不动（清单缺失是硬失败，见 webui_core）。
+    """
     errors: list[str] = []
     for name, url in provider_urls(appid, depotid, gid):
-        req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept": "*/*"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status != 200:
-                    errors.append(f"{name}: HTTP {resp.status}")
-                    continue
-                data = resp.read()
-        except urllib.error.HTTPError as exc:
-            errors.append(f"{name}: HTTP {exc.code}")
-            continue
-        except Exception as exc:  # 超时/连接失败
-            errors.append(f"{name}: {type(exc).__name__}")
-            continue
-        if is_steam_manifest(data):
-            return ManifestResult(data=data, provider=name, url=url)
-        errors.append(f"{name}: 不是有效清单（{len(data)} 字节，magic={data[:4].hex()}）")
+        for attempt in range(1, retries + 1):
+            req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept": "*/*"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        errors.append(f"{name}: HTTP {resp.status}")
+                        break  # 明确的 HTTP 状态码，换下一个源
+                    data = resp.read()
+            except urllib.error.HTTPError as exc:
+                errors.append(f"{name}: HTTP {exc.code}")
+                break  # 403/404 这类是确定性拒绝，重试同一个源没意义
+            except Exception as exc:  # 超时/连接失败 —— 这才是值得重试的
+                errors.append(f"{name}: {type(exc).__name__}(试{attempt}/{retries})")
+                if attempt < retries:
+                    time.sleep(backoff * attempt)
+                continue
+            if is_steam_manifest(data):
+                return ManifestResult(data=data, provider=name, url=url)
+            errors.append(f"{name}: 不是有效清单（{len(data)} 字节，magic={data[:4].hex()}）")
+            break  # 拿到了响应但不是清单，换下一个源
     if errors:
         print("  清单源都失败：" + "; ".join(errors))
     return None
