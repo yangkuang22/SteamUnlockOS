@@ -965,3 +965,85 @@ class TestFixInjectionStatus(unittest.TestCase):
         home = self._home("/usr/bin/steam")
         out = self._status(home)
         self.assertIn("桌面图标: ✗ 未指向包装器", out)
+
+
+class TestManifestLocalization(unittest.TestCase):
+    """P2-5: 清单本地化兜底（绕开 manifest request code 依赖）
+
+    背景: SLSsteam 的 request-code 提供者实测经常全部失效
+          （opensteamtool 403 / wudrm 返回非清单内容 / steamrun 502），
+          且提供者列表编译在二进制里无法扩充。
+
+          只要 <depot>_<gid>.manifest 在本地 depotcache，Steam 就直接用，
+          不向 CDN 请求 → 不需要 request code。
+
+    旧缺陷: 清单下载只在"gid 变化"时触发（版本对齐逻辑内部），
+            gid 本来就最新的游戏（如 ManifestHub3 无分支的新游、
+            或 pin 已是最新但没下过清单的游戏）会跳过 → 卡在 request code。
+
+    实机案例: 4090260 Lifeguard Holic（gid 未变 → 没下清单 → 无法下载）
+              602960 潜渊症（4 个 pin 缺 2 个清单）
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.dc = self.root / "depotcache"
+        self.dc.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_detects_missing_manifest(self):
+        """缺失检测：本地没有清单文件时应被识别出来"""
+        lua = ('addappid(4090260)\n'
+               'setManifestid(4090261,"2894220569627432962")\n')
+        pins = dict(re.findall(r'setManifestid\((\d+),\s*"(\d+)"\)', lua))
+        self.assertEqual(pins, {"4090261": "2894220569627432962"})
+        missing = [(int(d), int(g)) for d, g in pins.items()
+                   if not (self.dc / f"{d}_{g}.manifest").is_file()]
+        self.assertEqual(missing, [(4090261, 2894220569627432962)])
+
+    def test_present_manifest_not_reported_missing(self):
+        """已本地化的清单不应被重复下载（避免每次入库都重下）"""
+        lua = 'setManifestid(602961,"1417043812903529152")\n'
+        (self.dc / "602961_1417043812903529152.manifest").write_bytes(b"x" * 10)
+        pins = dict(re.findall(r'setManifestid\((\d+),\s*"(\d+)"\)', lua))
+        missing = [(int(d), int(g)) for d, g in pins.items()
+                   if not (self.dc / f"{d}_{g}.manifest").is_file()]
+        self.assertEqual(missing, [], "已存在的清单不应被判为缺失")
+
+    def test_gid_unchanged_still_checks_local_cache(self):
+        """关键回归：gid 没变也必须检查本地清单
+
+        旧代码把清单下载套在 `if bumped:`（gid 变化）里面，
+        gid 未变时完全不检查 → 这就是 Lifeguard Holic 卡住的原因。
+        新逻辑独立检查"清单在不在本地"，与 gid 是否变化无关。
+        """
+        # 模拟：Lua 里的 gid 与"最新 gid"相同 → bumped 为空
+        lua = 'setManifestid(4090261,"2894220569627432962")\n'
+        pins = dict(re.findall(r'setManifestid\((\d+),\s*"(\d+)"\)', lua))
+        latest = {"4090261": "2894220569627432962"}   # 相同 → 不 bump
+        bumped = [d for d, g in latest.items()
+                  if pins.get(d) and str(pins[d]) != str(g)]
+        self.assertEqual(bumped, [], "gid 相同时不应 bump（前提成立）")
+        # 但清单本地检查仍然应该跑，并且发现缺失
+        missing = [(int(d), int(g)) for d, g in pins.items()
+                   if not (self.dc / f"{d}_{g}.manifest").is_file()]
+        self.assertEqual(len(missing), 1,
+                         "gid 未变时也必须检出缺失清单（旧代码的缺陷点）")
+
+    def test_multiple_pins_partial_missing(self):
+        """潜渊症场景：多个 pin 里只缺一部分"""
+        (self.dc / "602962_1060615628637975021.manifest").write_bytes(b"y" * 10)
+        (self.dc / "1197650_4582887644478638575.manifest").write_bytes(b"z" * 10)
+        lua = ('setManifestid(602961,"1417043812903529152")\n'
+               'setManifestid(602962,"1060615628637975021")\n'
+               'setManifestid(602963,"32495984955377582")\n'
+               'setManifestid(1197650,"4582887644478638575")\n')
+        pins = dict(re.findall(r'setManifestid\((\d+),\s*"(\d+)"\)', lua))
+        self.assertEqual(len(pins), 4)
+        missing = sorted(int(d) for d, g in pins.items()
+                         if not (self.dc / f"{d}_{g}.manifest").is_file())
+        self.assertEqual(missing, [602961, 602963],
+                         "应只报缺失的两个 depot")

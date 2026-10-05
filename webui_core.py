@@ -753,6 +753,50 @@ def install(appid: int, include_dlc: bool = False) -> dict:
         except Exception as exc:  # noqa: BLE001
             warn(f"对齐最新版本失败（保留原版本）: {str(exc)[:60]}")
 
+    # ── 4.9 清单本地化兜底（关键：绕开请求码依赖）──
+    #   Steam 下载 depot 前会先查本地 depotcache/<depot>_<gid>.manifest：
+    #     命中 → 直接用，不向 CDN 请求，也就不需要 manifest request code
+    #     未命中 → 向 CDN 请求 → 需要 request code → 依赖 SLSsteam 的提供者
+    #
+    #   ★ 而 SLSsteam 的 request-code 提供者实测经常全部失效
+    #     （opensteamtool 403 / wudrm 返回非清单内容 / steamrun 502），
+    #     且提供者列表编译在二进制里、无法扩充。
+    #   ★ 只要清单在本地，整条 request-code 路径就被绕开。
+    #
+    #   上面 4.8 只在 gid 变化时下载清单（"版本对齐"），
+    #   但 gid 本来就最新的游戏（例：ManifestHub3 无分支的新游）
+    #   会跳过下载 → depotcache 缺失 → 卡在 request code。
+    #   所以这里独立检查"清单在不在本地"，与 gid 是否变化无关。
+    if lua_text:
+        try:
+            from suos import manifests as _mf
+            pins = dict(re.findall(r'setManifestid\((\d+),\s*"(\d+)"\)', lua_text))
+            missing = []
+            for dep_s, gid_s in pins.items():
+                if not (DEPOTCACHE / f"{dep_s}_{gid_s}.manifest").is_file():
+                    missing.append((int(dep_s), int(gid_s)))
+            if missing:
+                got, failed = [], []
+                for dep_i, gid_i in missing:
+                    try:
+                        mr = _mf.fetch_manifest(appid, dep_i, gid_i)
+                    except Exception:
+                        mr = None
+                    if mr:
+                        got.append((dep_i, gid_i, mr.data))
+                    else:
+                        failed.append(str(dep_i))
+                if got:
+                    write_manifests(got)
+                    res["steps"].append(
+                        f"✓ 已补齐 {len(got)} 个本地清单（免请求码）"
+                        + (f"，{len(failed)} 个失败" if failed else ""))
+                else:
+                    warn(f"{len(missing)} 个清单没拿到，Steam 可能需要请求码"
+                         + (f"（depot: {', '.join(failed[:4])}）" if failed else ""))
+        except Exception as exc:  # noqa: BLE001
+            warn(f"清单本地化检查失败: {str(exc)[:60]}")
+
     # ── 5. Lua（致命）──
     if not lua_text and r.get("keys"):
         lines = [f"addappid({appid})"]
